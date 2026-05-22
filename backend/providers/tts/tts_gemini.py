@@ -1,4 +1,3 @@
-import base64
 from typing import Callable
 
 from google import genai
@@ -13,6 +12,7 @@ class GeminiTTS:
     Non-streaming TTS via Gemini generateContent with audio modalities.
     Higher TTFB than OpenAI — useful as a demo contrast point.
     Emits full audio per sentence as TtsAudioChunk + TtsDone.
+    Audio data is returned as raw PCM bytes (not base64).
     """
 
     def __init__(self, on_event: Callable):
@@ -24,7 +24,10 @@ class GeminiTTS:
             return
         response = await self._client.aio.models.generate_content(
             model="gemini-2.5-flash-preview-tts",
-            contents=text,
+            contents=types.Content(
+                parts=[types.Part(text=text)],
+                role="user",
+            ),
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],
                 speech_config=types.SpeechConfig(
@@ -39,9 +42,13 @@ class GeminiTTS:
         for candidate in response.candidates:
             for part in candidate.content.parts:
                 if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
-                    pcm = base64.b64decode(part.inline_data.data)
+                    # inline_data.data is already raw PCM bytes
+                    pcm = part.inline_data.data
+                    if isinstance(pcm, str):
+                        import base64
+                        pcm = base64.b64decode(pcm)
                     self._on_event(TtsAudioChunk(
-                        pcm_bytes=pcm,
+                        pcm_bytes=bytes(pcm),
                         sample_rate=24000,
                         provider="gemini",
                         source="tts",

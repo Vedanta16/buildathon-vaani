@@ -20,9 +20,10 @@ class OpenAIRealtimeASR:
         self._receive_task: asyncio.Task | None = None
 
     async def connect(self) -> None:
+        # .enter() is the non-context-manager way to open the connection
         self._ws = await self._client.beta.realtime.connect(
             model="gpt-4o-realtime-preview"
-        )
+        ).enter()
         await self._ws.session.update(session={
             "input_audio_format": "pcm16",
             "input_audio_transcription": {"model": "whisper-1"},
@@ -33,9 +34,10 @@ class OpenAIRealtimeASR:
     async def _receive_loop(self) -> None:
         try:
             async for event in self._ws:
-                etype = event.get("type", "")
+                # SDK events are objects with a .type attribute
+                etype = getattr(event, "type", None) or (event.get("type", "") if isinstance(event, dict) else "")
                 if etype == "conversation.item.input_audio_transcription.delta":
-                    delta = event.get("delta", "")
+                    delta = getattr(event, "delta", "") or (event.get("delta", "") if isinstance(event, dict) else "")
                     self._partial_buf += delta
                     self._on_event(AsrPartial(
                         text=self._partial_buf,
@@ -43,7 +45,7 @@ class OpenAIRealtimeASR:
                         provider="openai_realtime",
                     ))
                 elif etype == "conversation.item.input_audio_transcription.completed":
-                    text = event.get("transcript", self._partial_buf)
+                    text = getattr(event, "transcript", self._partial_buf) or self._partial_buf
                     self._on_event(AsrFinal(text=text, provider="openai_realtime"))
                     self._partial_buf = ""
         except asyncio.CancelledError:

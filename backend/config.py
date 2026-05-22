@@ -3,8 +3,8 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Config:
-    asr_provider: str = os.getenv("ASR_PROVIDER", "openai_realtime")
-    tts_provider: str = os.getenv("TTS_PROVIDER", "openai")
+    asr_provider: str = os.getenv("ASR_PROVIDER", "gemini_live")
+    tts_provider: str = os.getenv("TTS_PROVIDER", "gemini")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "YOUR_OPENAI_API_KEY")
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "AIzaSyCJ0bUaqkF6pGJOpEyXqgY8MHgLLDQ_ndA")
 

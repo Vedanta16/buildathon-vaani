@@ -32,12 +32,13 @@ class GeminiLiveASR:
 
     async def connect(self) -> None:
         config = types.LiveConnectConfig(
-            response_modalities=[],  # no audio output — transcription only
+            # Native audio model requires AUDIO modality — we discard its audio in receive loop
+            response_modalities=["AUDIO"],
             input_audio_transcription=types.AudioTranscriptionConfig(),
         )
         # connect() is an asynccontextmanager; enter it manually to keep it alive
         self._ctx_manager = self._client.aio.live.connect(
-            model="gemini-live-2.5-flash",
+            model="gemini-2.5-flash-native-audio-latest",
             config=config,
         )
         self._session = await self._ctx_manager.__aenter__()
@@ -48,6 +49,11 @@ class GeminiLiveASR:
             async for msg in self._session.receive():
                 server_content = getattr(msg, "server_content", None)
                 if server_content is None:
+                    continue
+
+                # Discard model audio output turns — we only want input transcription
+                model_turn = getattr(server_content, "model_turn", None)
+                if model_turn:
                     continue
 
                 # Input transcription (partial or final)
