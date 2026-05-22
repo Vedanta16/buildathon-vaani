@@ -1,0 +1,6 @@
+# backend/providers/tts/base.py
+from typing import Callable, Protocol
+
+class TTSAdapter(Protocol):
+    async def synthesize(self, text: str) -> None: ...
+    async def close(self) -> None: ...
