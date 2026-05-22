@@ -1,14 +1,22 @@
 /* Left pane — live transcript */
 
-function Transcript({ calling }) {
-  const turns = window.MOCK_DATA.transcript;
+function Transcript({ calling, liveTranscript, partialText }) {
+  // Use live transcript if provided, otherwise fall back to mock data
+  const turns = liveTranscript && liveTranscript.length > 0
+    ? liveTranscript.map(t => ({
+        role: t.role,
+        body: t.text,
+        ts: new Date(t.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      }))
+    : (window.MOCK_DATA ? window.MOCK_DATA.transcript : []);
+
   const scrollerRef = useRef(null);
 
   useEffect(() => {
     if (scrollerRef.current && calling) {
       scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
     }
-  }, [calling]);
+  }, [turns, partialText, calling]);
 
   return (
     <div className="pane" style={{ background: "var(--bg-base)" }}>
@@ -17,7 +25,7 @@ function Transcript({ calling }) {
         right={
           calling ? (
             <span className="pulse">
-              <span className="pulse-dot" /> live · 00:34
+              <span className="pulse-dot" /> live
             </span>
           ) : (
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-tertiary)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
@@ -31,7 +39,13 @@ function Transcript({ calling }) {
           {turns.map((t, i) => (
             <TranscriptTurn key={i} turn={t} />
           ))}
-          {!calling && (
+          {partialText && (
+            <div className="turn partial">
+              <div className="role">User…</div>
+              <div className="body" style={{ opacity: 0.6, fontStyle: 'italic' }}>{partialText}</div>
+            </div>
+          )}
+          {!calling && turns.length > 0 && (
             <div style={{ color: "var(--fg-tertiary)", fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", paddingTop: 8 }}>
               — end of call —
             </div>
