@@ -1,4 +1,4 @@
-# Voice Agent Console
+# buildathon-vaani — Voice Agent Console
 
 A real-time voice-to-voice (V2V) agent built for the OpenAI × Gemini Buildathon. Talk to an AI agent through your browser mic — speech is transcribed, routed through an LLM, and spoken back with low latency.
 
