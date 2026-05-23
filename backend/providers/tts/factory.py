@@ -2,6 +2,13 @@
 from typing import Callable
 from backend.config import cfg
 
+TTS_PROVIDERS = frozenset({"mock", "openai", "gemini"})
+
+
+def registered_tts_providers() -> frozenset[str]:
+    return TTS_PROVIDERS
+
+
 def create_tts(on_event: Callable, provider: str | None = None):
     p = provider or cfg.tts_provider
     if p == "mock":

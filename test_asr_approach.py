@@ -30,7 +30,7 @@ from google.genai import types
 try:
     from backend.config import cfg
     GEMINI_API_KEY = cfg.gemini_api_key
-    print(f"[setup] Loaded API key from backend.config: {GEMINI_API_KEY[:8]}...")
+    print("[setup] Loaded Gemini API key from backend.config")
 except Exception as e:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     print(f"[setup] backend.config import failed ({e}), using env GEMINI_API_KEY")
@@ -291,7 +291,7 @@ async def main():
     print("Gemini Live ASR Approach Test")
     print("Testing TEXT modality to avoid 94-audio-chunk reconnect problem")
     print("=" * 60)
-    print(f"Using API key: {GEMINI_API_KEY[:8]}...")
+    print(f"Gemini API key configured: {bool(GEMINI_API_KEY)}")
     print()
 
     # Build ordered list: prefer TEXT for each model, then [], then AUDIO

@@ -368,6 +368,61 @@ Minimum HTTP endpoints:
 
 All events and endpoints should return explicit empty/loading/error states. The frontend should not synthesize fake fallback content.
 
+## Provider Benchmarking
+
+Model/provider choices should be benchmarked before they are hard-coded into routing policy.
+
+Benchmark source:
+
+- Folder: `benchmarks/model_pipeline/`
+- Model manifest: `benchmarks/model_pipeline/model_matrix.json`
+- Runner: `python -m benchmarks.model_pipeline.run_benchmarks`
+- End-to-end proof runner: `python -m benchmarks.model_pipeline.run_e2e_pipeline`
+- Results: `benchmarks/model_pipeline/results/`
+
+Benchmark dimensions:
+
+| Pipeline area | Providers | What to measure |
+| --- | --- | --- |
+| Chat LLM | OpenAI, Gemini | TTFT, total latency, input/output tokens, cached tokens, streaming transport, route fit, tool/search behavior, structured output reliability. |
+| ASR | OpenAI, Gemini | Transcription latency, streaming vs batch mode, output quality, diarization/tone capability where available, batch vs live suitability. |
+| TTS | OpenAI, Gemini | Time to first audio byte, full synthesis latency, streaming transport, output byte size, voice quality, style/tone control, cache suitability. |
+
+Feature benchmarks:
+
+- OpenAI prompt caching: repeated stable-prefix prompts should expose `cached_tokens` in usage.
+- Gemini context caching: repeated stable-prefix prompts should track cache-hit tokens where available; explicit caching should be benchmarked separately once route prompts are stable.
+- OpenAI web search/tool use: benchmark streamed Responses API tool path for search-backed answers.
+- Gemini Google Search grounding: benchmark `google_search` grounding path for search-backed answers.
+- Function/tool calling: benchmark route/tool selection separately from answer quality.
+- Phrase ID compliance: benchmark whether chat models return valid compact `{"p":"ID"}` segments when phrase IDs are provided.
+- Live ASR: benchmark separately from REST batch ASR. OpenAI should use Realtime transcription; Gemini should use Live API for interactive voice or Google Cloud Speech-to-Text for dedicated real-time transcription.
+
+Default candidate matrix:
+
+| Area | OpenAI candidates | Gemini candidates |
+| --- | --- | --- |
+| Chat LLM | `gpt-4.1-nano`, `gpt-4.1-mini`, `gpt-4o-mini`, `gpt-5-nano`, `gpt-5-mini`, `gpt-5.2` | `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3.5-flash`, `gemini-3-flash-preview` |
+| ASR | `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`, `gpt-4o-transcribe-diarize`, `whisper-1` | `gemini-2.5-flash-lite`, `gemini-2.5-flash` audio-understanding transcription |
+| TTS | `gpt-4o-mini-tts`, `tts-1`, `tts-1-hd` | `gemini-2.5-flash-preview-tts` |
+
+Benchmark policy:
+
+- Do not choose default production models from provider marketing claims alone.
+- Benchmark with our actual route prompts, phrase manifests, memory blocks, and tool definitions.
+- Record exact model string, provider, route, prompt version, phrase manifest version, and cache settings for every run.
+- Keep preview/latest models in the benchmark matrix, but production defaults should prefer stable model strings unless the measured benefit justifies preview risk.
+- Do not include Gemini Pro-class models in routine benchmarks; use Flash/Lite families by default to stay aligned with latency and quota constraints.
+- Re-run benchmarks whenever prompt layout, phrase manifest, routing policy, or provider SDK version changes.
+- Use `--winners` in the benchmark runner to pick per-provider winners for latency, token efficiency, estimated cost, and reasoning proxy from the same run.
+
+End-to-end before/after validation:
+
+- Baseline path should represent the expensive/current default: LLM ack, full-context answer prompt, smart/default model, and post-call extraction.
+- Optimized path should apply the architecture: phrase-cache ack, deterministic/small-model routing, progressive context, route-specific model, async post-call extraction, and cached TTS where applicable.
+- The proof runner should be run before production integration so the right-panel metrics have real step-level data.
+- Each JSONL row should map cleanly to the future live observability UI: route, model, input tokens, output tokens, cached tokens, TTFT, prompt size, cost estimate, API-call flag, user-visible flag, streaming flag, transport mode, and applied optimization.
+
 ## Memory And Personalization
 
 Memory should move the product from "who are you?" to "it knows me" without feeling invasive.

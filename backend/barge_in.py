@@ -19,6 +19,14 @@ class BargeInHandler:
     def register_tts_task(self, task: asyncio.Task) -> None:
         self._tts_task = task
 
+    def clear_tts_task(self, task: asyncio.Task) -> None:
+        if self._tts_task is task:
+            self._tts_task = None
+
+    def clear_llm_task(self, task: asyncio.Task) -> None:
+        if self._llm_task is task:
+            self._llm_task = None
+
     async def fire(self, ts_ms: int) -> None:
         """Call when VAD detects speech during agent playback."""
         self._vad.agent_playing = False

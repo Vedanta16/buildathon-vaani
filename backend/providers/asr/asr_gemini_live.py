@@ -41,7 +41,7 @@ class GeminiLiveASR:
             ),
         )
         self._ctx_manager = self._client.aio.live.connect(
-            model="gemini-2.5-flash-native-audio-latest",
+            model=cfg.gemini_live_model,
             config=config,
         )
         self._session = await self._ctx_manager.__aenter__()

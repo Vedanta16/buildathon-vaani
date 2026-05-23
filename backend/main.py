@@ -1,7 +1,9 @@
 # backend/main.py
 import asyncio
+import contextlib
 import json
 import logging
+import re
 import time
 import uuid
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -23,8 +25,8 @@ from backend.barge_in import BargeInHandler
 from backend.speculation import SpeculationManager
 from backend.metrics import SessionMetrics
 from backend.recording import Recorder
-from backend.providers.asr.factory import create_asr
-from backend.providers.tts.factory import create_tts
+from backend.providers.asr.factory import create_asr, registered_asr_providers
+from backend.providers.tts.factory import create_tts, registered_tts_providers
 
 app = FastAPI()
 app.add_middleware(
@@ -39,6 +41,33 @@ SYSTEM_PROMPT = (
     "You are a helpful voice assistant. Be concise — voice responses should be 1-3 sentences. "
     "Never use markdown, bullet points, or lists. Speak naturally."
 )
+
+SENTENCE_RE = re.compile(r"(.+?[.!?])(?:\s+|$)", re.DOTALL)
+
+
+class SentenceAccumulator:
+    """Incrementally extracts complete sentences from streamed LLM tokens."""
+
+    def __init__(self) -> None:
+        self._buffer = ""
+
+    def push(self, token: str) -> list[str]:
+        self._buffer += token
+        sentences: list[str] = []
+        consumed = 0
+        for match in SENTENCE_RE.finditer(self._buffer):
+            sentence = match.group(1).strip()
+            if sentence:
+                sentences.append(sentence)
+            consumed = match.end()
+        if consumed:
+            self._buffer = self._buffer[consumed:]
+        return sentences
+
+    def drain(self) -> list[str]:
+        text = self._buffer.strip()
+        self._buffer = ""
+        return [text] if text else []
 
 
 @app.on_event("startup")
@@ -118,6 +147,28 @@ async def voice_session(ws: WebSocket, session_id: str):
     spec_enabled = config.get("spec_enabled", True)
     system_prompt = config.get("system_prompt", SYSTEM_PROMPT) or SYSTEM_PROMPT
 
+    async def send_startup_error(message: str):
+        await ws.send_text(json.dumps({"type": "error", "message": message}))
+        await ws.close(code=1008)
+
+    if asr_provider not in registered_asr_providers():
+        await send_startup_error(
+            f"Unknown ASR provider '{asr_provider}'. Available: {', '.join(sorted(registered_asr_providers()))}"
+        )
+        return
+    if tts_provider not in registered_tts_providers():
+        await send_startup_error(
+            f"Unknown TTS provider '{tts_provider}'. Available: {', '.join(sorted(registered_tts_providers()))}"
+        )
+        return
+
+    missing_keys = cfg.missing_provider_keys(asr_provider, tts_provider)
+    if asr_provider != "mock" or tts_provider != "mock":
+        missing_keys.extend(cfg.missing_live_llm_keys())
+    if missing_keys:
+        await send_startup_error("; ".join(dict.fromkeys(missing_keys)))
+        return
+
     try:
         await create_session(session_id, user_id, asr_provider, tts_provider)
     except Exception:
@@ -127,7 +178,8 @@ async def voice_session(ws: WebSocket, session_id: str):
         session_metrics = SessionMetrics()
         recorder = Recorder(session_id=session_id)
         logger.info("Initializing VAD...")
-        vad = VAD(sample_rate=cfg.sample_rate)
+        turn_vad = VAD(sample_rate=cfg.sample_rate)
+        barge_in_vad = VAD(sample_rate=cfg.sample_rate, threshold=cfg.barge_in_threshold)
         logger.info("VAD ready")
     except Exception as e:
         logger.error("Session setup failed: %s", e, exc_info=True)
@@ -155,19 +207,27 @@ async def voice_session(ws: WebSocket, session_id: str):
         except Exception:
             pass
 
+    playback_epoch = 0
+
     async def send_cancel():
-        vad.agent_playing = False
+        nonlocal playback_epoch
+        playback_epoch += 1
+        turn_vad.agent_playing = False
         await send_json({"type": "playback.cancel"})
 
-    barge_in_handler = BargeInHandler(on_cancel=send_cancel, vad=vad)
+    barge_in_handler = BargeInHandler(on_cancel=send_cancel, vad=turn_vad)
 
     # --- TTS event dispatcher ---
-    async def handle_tts_event(event):
+    async def handle_tts_event(event, epoch: int | None = None):
+        if epoch is None:
+            epoch = playback_epoch
+        if epoch != playback_epoch:
+            return
         if isinstance(event, TtsAudioChunk):
             recorder.append_agent(event.pcm_bytes, session_metrics.now_ms())
             if not turn_state.get("tts_first_audio_ms"):
                 turn_state["tts_first_audio_ms"] = session_metrics.now_ms()
-            vad.agent_playing = True
+            turn_vad.agent_playing = True
             await send_audio(event.pcm_bytes, {
                 "type": "tts.audio_chunk",
                 "source": event.source,
@@ -176,12 +236,13 @@ async def voice_session(ws: WebSocket, session_id: str):
             })
         elif isinstance(event, TtsDone):
             logger.info("TTS done — agent_playing reset to False, cooldown started")
-            vad.agent_playing = False
-            vad.set_cooldown(500)
+            turn_vad.agent_playing = False
+            turn_vad.set_cooldown(500)
             await send_json({"type": "tts.done", "provider": event.provider})
 
     def on_tts_event_sync(event):
-        asyncio.create_task(handle_tts_event(event))
+        epoch = playback_epoch
+        asyncio.create_task(handle_tts_event(event, epoch=epoch))
 
     tts = create_tts(on_event=on_tts_event_sync, provider=tts_provider)
 
@@ -190,7 +251,19 @@ async def voice_session(ws: WebSocket, session_id: str):
         sentence = sentence.strip()
         if not sentence:
             return
-        turn_state["tts_start_ms"] = session_metrics.now_ms()
+        sentence_index = turn_state.get("tts_sentence_count", 0) + 1
+        turn_state["tts_sentence_count"] = sentence_index
+        now = session_metrics.now_ms()
+        if not turn_state.get("tts_start_ms"):
+            turn_state["tts_start_ms"] = now
+        if not turn_state.get("first_sentence_tts_start_ms"):
+            turn_state["first_sentence_tts_start_ms"] = now
+        turn_state["last_sentence_tts_start_ms"] = now
+        await send_json({
+            "type": "tts.sentence_start",
+            "sentence_index": sentence_index,
+            "text": sentence,
+        })
         cached_pcm = phrase_cache.lookup(sentence)
         if cached_pcm:
             turn_state["phrase_cache_hit"] = True
@@ -204,17 +277,51 @@ async def voice_session(ws: WebSocket, session_id: str):
         else:
             await tts.synthesize(sentence)
 
+    class SentenceTTSStreamer:
+        def __init__(self):
+            self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+            self._task = asyncio.create_task(self._run())
+            barge_in_handler.register_tts_task(self._task)
+
+        def enqueue(self, sentence: str) -> None:
+            sentence = sentence.strip()
+            if sentence:
+                self._queue.put_nowait(sentence)
+
+        async def finish(self) -> None:
+            self._queue.put_nowait(None)
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+
+        async def cancel(self) -> None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+
+        async def _run(self) -> None:
+            try:
+                while True:
+                    sentence = await self._queue.get()
+                    if sentence is None:
+                        return
+                    await flush_sentence(sentence)
+            finally:
+                barge_in_handler.clear_tts_task(self._task)
+
     # --- LLM + TTS pipeline ---
     async def run_llm_tts(user_text: str):
-        import re
         turn_state["llm_start_ms"] = session_metrics.now_ms()
-        sentence_buf = ""
+        turn_state["llm_streaming"] = True
+        turn_state["tts_streaming"] = True
+        turn_state["tts_sentence_count"] = 0
+        sentence_acc = SentenceAccumulator()
+        sentence_tts = SentenceTTSStreamer()
 
         def on_token(token: str):
-            nonlocal sentence_buf
-            sentence_buf += token
             if not turn_state.get("llm_first_token_ms"):
                 turn_state["llm_first_token_ms"] = session_metrics.now_ms()
+            for sentence in sentence_acc.push(token):
+                sentence_tts.enqueue(sentence)
 
         try:
             full_text, usage = await stream_response(
@@ -222,22 +329,19 @@ async def voice_session(ws: WebSocket, session_id: str):
                 system_prompt=system_prompt,
                 on_token=on_token,
             )
+            for sentence in sentence_acc.drain():
+                sentence_tts.enqueue(sentence)
+            conversation_history.append({"role": "assistant", "content": full_text})
+            await send_json({"type": "llm.response", "text": full_text})
+            await sentence_tts.finish()
+        except asyncio.CancelledError:
+            await sentence_tts.cancel()
+            raise
         except Exception as e:
+            await sentence_tts.cancel()
             logger.error("LLM error: %s", e)
             await send_json({"type": "error", "message": f"LLM error: {e}"})
             return
-
-        # Flush complete text as sentences
-        # Split on sentence boundaries
-        sentences = re.split(r'(?<=[.!?])\s+', full_text.strip())
-        for sentence in sentences:
-            if sentence.strip():
-                await flush_sentence(sentence)
-
-        conversation_history.append({"role": "assistant", "content": full_text})
-
-        # Emit agent response text for transcript
-        await send_json({"type": "llm.response", "text": full_text})
 
         # Emit turn metrics
         turn_metrics = {
@@ -245,8 +349,13 @@ async def voice_session(ws: WebSocket, session_id: str):
             **(usage or {}),
             "asr_provider": asr_provider,
             "tts_provider": tts_provider,
+            "vad_mode": "local_manual",
+            "asr_streaming": True,
+            "tts_streaming": True,
+            "asr_transport": asr_provider,
+            "tts_transport": tts_provider,
         }
-        await append_turn(session_id, "assistant", full_text, session_metrics.now_ms())
+        await append_turn(session_id, "assistant", full_text, session_metrics.now_ms(), turn_metrics)
         await send_json({"type": "metrics.turn", "turn": turn_metrics})
 
     # --- Speculation ---
@@ -258,22 +367,28 @@ async def voice_session(ws: WebSocket, session_id: str):
         )
 
     async def on_commit_async(committed_text: str, usage: dict):
-        import re
         if not committed_text.strip():
             return
-        sentences = re.split(r'(?<=[.!?])\s+', committed_text.strip())
-        for sentence in sentences:
-            if sentence.strip():
-                await flush_sentence(sentence)
+        turn_state["tts_streaming"] = True
+        sentence_tts = SentenceTTSStreamer()
+        sentence_acc = SentenceAccumulator()
+        for sentence in sentence_acc.push(committed_text) + sentence_acc.drain():
+            sentence_tts.enqueue(sentence)
         conversation_history.append({"role": "assistant", "content": committed_text})
-        await append_turn(session_id, "assistant", committed_text, session_metrics.now_ms())
         await send_json({"type": "llm.response", "text": committed_text})
+        await sentence_tts.finish()
         turn_metrics = {
             **turn_state,
             **(usage or {}),
             "asr_provider": asr_provider,
             "tts_provider": tts_provider,
+            "vad_mode": "local_manual",
+            "asr_streaming": True,
+            "tts_streaming": True,
+            "asr_transport": asr_provider,
+            "tts_transport": tts_provider,
         }
+        await append_turn(session_id, "assistant", committed_text, session_metrics.now_ms(), turn_metrics)
         await send_json({"type": "metrics.turn", "turn": turn_metrics})
 
     def on_commit_sync(committed_text: str, usage: dict):
@@ -290,6 +405,9 @@ async def voice_session(ws: WebSocket, session_id: str):
         nonlocal in_speech
         if isinstance(event, AsrPartial):
             logger.info("ASR partial: %r", event.text)
+            turn_state["asr_partial_count"] = turn_state.get("asr_partial_count", 0) + 1
+            if not turn_state.get("asr_first_partial_ms"):
+                turn_state["asr_first_partial_ms"] = session_metrics.now_ms()
             await send_json({"type": "asr.partial", "text": event.text, "provider": event.provider})
             if spec_manager:
                 await spec_manager.on_partial(event.text)
@@ -317,6 +435,7 @@ async def voice_session(ws: WebSocket, session_id: str):
 
             llm_task = asyncio.create_task(run_llm_tts(event.text))
             barge_in_handler.register_llm_task(llm_task)
+            llm_task.add_done_callback(barge_in_handler.clear_llm_task)
 
     def on_asr_event_sync(event):
         asyncio.create_task(handle_asr_event(event))
@@ -340,7 +459,7 @@ async def voice_session(ws: WebSocket, session_id: str):
     # --- Main receive loop ---
     # 10 frames × 32ms = 320ms of consecutive silence before flushing ASR.
     # Without this, any brief mid-sentence pause cuts the utterance in half.
-    SILENCE_FLUSH_FRAMES = 10
+    SILENCE_FLUSH_FRAMES = cfg.vad_silence_flush_frames
     _frame_count = 0
     _silence_frames = 0
     try:
@@ -352,26 +471,41 @@ async def voice_session(ws: WebSocket, session_id: str):
                 logger.info("Audio frames received: %d", _frame_count)
             recorder.append_user(message, session_metrics.now_ms())
 
-            if not turn_state.get("vad_start_ms"):
-                turn_state["vad_start_ms"] = session_metrics.now_ms()
+            barge_detected = False
+            if turn_vad.agent_playing and barge_in_vad.process_barge_in(message):
+                barge_detected = True
+                ts_ms = session_metrics.now_ms()
+                await barge_in_handler.fire(ts_ms=ts_ms)
+                await send_json({"type": "barge_in", "ts_ms": ts_ms})
 
-            is_speech = vad.process_and_check(message)
+            is_speech = barge_detected or (
+                not turn_vad.agent_playing and turn_vad.process_and_check(message)
+            )
             if _frame_count <= 5:
-                logger.info("Frame %d: len=%d, vad_prob=%s, agent_playing=%s",
-                            _frame_count, len(message), vad._last_prob, vad.agent_playing)
+                logger.info(
+                    "Frame %d: len=%d, vad_prob=%s, barge_prob=%s, agent_playing=%s",
+                    _frame_count,
+                    len(message),
+                    turn_vad._last_prob,
+                    barge_in_vad._last_prob,
+                    turn_vad.agent_playing,
+                )
 
             if is_speech:
                 _silence_frames = 0
                 if not in_speech:
                     in_speech = True
+                    previous_barge_ms = turn_state.get("barge_in_ms") if barge_detected else None
+                    turn_state.clear()
                     turn_state["vad_start_ms"] = session_metrics.now_ms()
+                    turn_state["vad_mode"] = "local_manual"
+                    turn_state["asr_streaming"] = True
+                    turn_state["asr_transport"] = asr_provider
+                    if barge_detected:
+                        turn_state["barge_in_ms"] = previous_barge_ms or turn_state["vad_start_ms"]
+                        turn_state["playback_cancelled"] = True
                     logger.info("VAD: speech started, sending ActivityStart")
                     await asr.activity_start()
-
-                # Barge-in detection
-                if vad.agent_playing:
-                    await barge_in_handler.fire(ts_ms=session_metrics.now_ms())
-                    await send_json({"type": "barge_in", "ts_ms": session_metrics.now_ms()})
 
                 await asr.send_audio(message)
 
@@ -386,7 +520,6 @@ async def voice_session(ws: WebSocket, session_id: str):
                         _silence_frames = 0
                         logger.info("VAD: 320ms silence — flushing ASR")
                         await asr.flush()
-                        turn_state.clear()
 
     except WebSocketDisconnect:
         pass

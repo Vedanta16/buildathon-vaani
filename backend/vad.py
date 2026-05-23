@@ -30,8 +30,11 @@ class VAD:
         """Suppress VAD for `ms` ms after TTS ends to let speaker echo clear."""
         self._cooldown_until = time.monotonic() + ms / 1000.0
 
-    def process(self, pcm_bytes: bytes) -> float | None:
-        paused = self.agent_playing or time.monotonic() < self._cooldown_until
+    def process(self, pcm_bytes: bytes, *, ignore_agent_playing: bool = False, ignore_cooldown: bool = False) -> float | None:
+        paused = (
+            (self.agent_playing and not ignore_agent_playing)
+            or (time.monotonic() < self._cooldown_until and not ignore_cooldown)
+        )
 
         if paused:
             self._was_paused = True
@@ -56,9 +59,21 @@ class VAD:
         self._last_prob = prob
         return prob
 
-    def process_and_check(self, pcm_bytes: bytes) -> bool:
-        prob = self.process(pcm_bytes)
+    def process_and_check(self, pcm_bytes: bytes, *, ignore_agent_playing: bool = False, ignore_cooldown: bool = False) -> bool:
+        prob = self.process(
+            pcm_bytes,
+            ignore_agent_playing=ignore_agent_playing,
+            ignore_cooldown=ignore_cooldown,
+        )
         if prob is None:
             return False
         self._last_prob = prob
         return prob >= self.threshold
+
+    def process_barge_in(self, pcm_bytes: bytes) -> bool:
+        """Detect user speech during playback without the normal playback/cooldown gate."""
+        return self.process_and_check(
+            pcm_bytes,
+            ignore_agent_playing=True,
+            ignore_cooldown=True,
+        )

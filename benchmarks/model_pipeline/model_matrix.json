@@ -1,0 +1,179 @@
+{
+  "generated_for": "voice-agent-production-v1",
+  "last_verified": "2026-05-23",
+  "notes": [
+    "Model availability depends on account, region, billing, and provider rollout.",
+    "Preview/latest aliases may change; benchmark output records exact model string used.",
+    "Realtime/live models are listed for planning, but the first benchmark runner focuses on REST chat, batch ASR, and TTS."
+  ],
+  "providers": {
+    "openai": {
+      "chat_llm": [
+        {
+          "model": "gpt-4.1-nano",
+          "lane": "FAST_LLM_BASELINE",
+          "route_candidates": ["classification", "slot_extraction", "simple_summary", "voice_ack_rewrite"],
+          "features": ["streaming", "function_calling", "structured_outputs", "prompt_caching"],
+          "benchmark_cases": ["plain_chat", "prompt_cache_repeat", "reasoning_eval"]
+        },
+        {
+          "model": "gpt-4.1-mini",
+          "lane": "FAST_LLM_BASELINE",
+          "route_candidates": ["fast_answer", "clarify", "memory_suggestion"],
+          "features": ["streaming", "function_calling", "structured_outputs", "prompt_caching"],
+          "benchmark_cases": ["plain_chat", "prompt_cache_repeat", "reasoning_eval"]
+        },
+        {
+          "model": "gpt-4o-mini",
+          "lane": "FAST_LLM_BASELINE",
+          "route_candidates": ["fast_answer", "clarify", "simple_conversation"],
+          "features": ["streaming", "function_calling", "structured_outputs", "prompt_caching"],
+          "benchmark_cases": ["plain_chat", "prompt_cache_repeat", "reasoning_eval"]
+        },
+        {
+          "model": "gpt-5-nano",
+          "lane": "FAST_LLM",
+          "route_candidates": ["classification", "slot_extraction", "simple_summary"],
+          "features": ["streaming", "function_calling", "structured_outputs", "prompt_caching", "web_search", "file_search"],
+          "benchmark_cases": ["plain_chat", "prompt_cache_repeat", "reasoning_eval", "web_search_tool"]
+        },
+        {
+          "model": "gpt-5-mini",
+          "lane": "FAST_LLM",
+          "route_candidates": ["fast_answer", "clarify", "memory_suggestion", "post_call_summary"],
+          "features": ["streaming", "function_calling", "structured_outputs", "prompt_caching", "web_search", "file_search", "code_interpreter"],
+          "benchmark_cases": ["plain_chat", "prompt_cache_repeat", "reasoning_eval", "web_search_tool"]
+        },
+        {
+          "model": "gpt-5.2",
+          "lane": "SMART_LLM",
+          "route_candidates": ["complex_reasoning", "tool_synthesis", "quality_eval", "post_call_eval"],
+          "features": ["streaming", "function_calling", "structured_outputs", "prompt_caching", "web_search", "file_search", "code_interpreter", "reasoning_effort"],
+          "benchmark_cases": ["plain_chat", "prompt_cache_repeat", "reasoning_eval", "web_search_tool"]
+        }
+      ],
+      "asr": [
+        {
+          "model": "gpt-4o-mini-transcribe",
+          "lane": "FAST_ASR",
+          "features": ["batch_transcription", "realtime_transcription_backend_default"],
+          "benchmark_cases": ["batch_transcribe"]
+        },
+        {
+          "model": "gpt-4o-transcribe",
+          "lane": "SMART_ASR",
+          "features": ["batch_transcription"],
+          "benchmark_cases": ["batch_transcribe"]
+        },
+        {
+          "model": "gpt-4o-transcribe-diarize",
+          "lane": "SMART_ASR",
+          "features": ["batch_transcription", "diarization"],
+          "benchmark_cases": ["batch_transcribe"]
+        },
+        {
+          "model": "whisper-1",
+          "lane": "BASELINE_ASR",
+          "features": ["batch_transcription"],
+          "benchmark_cases": ["batch_transcribe"]
+        }
+      ],
+      "tts": [
+        {
+          "model": "gpt-4o-mini-tts",
+          "lane": "SMART_TTS",
+          "features": ["streaming", "voice_control", "tone_instructions"],
+          "benchmark_cases": ["tts_ttfb", "tts_sentence_stream"]
+        },
+        {
+          "model": "tts-1",
+          "lane": "FAST_TTS",
+          "features": ["streaming", "low_latency"],
+          "benchmark_cases": ["tts_ttfb", "tts_sentence_stream"]
+        },
+        {
+          "model": "tts-1-hd",
+          "lane": "QUALITY_TTS",
+          "features": ["streaming", "higher_quality"],
+          "benchmark_cases": ["tts_ttfb", "tts_sentence_stream"]
+        }
+      ],
+      "realtime": [
+        {
+          "model": "gpt-realtime",
+          "lane": "LIVE_AUDIO",
+          "features": ["realtime_audio", "function_calling", "prompt_caching"],
+          "benchmark_cases": ["future_live_turn_latency"]
+        },
+        {
+          "model": "gpt-realtime-mini",
+          "lane": "LIVE_AUDIO_FAST",
+          "features": ["realtime_audio", "function_calling", "prompt_caching"],
+          "benchmark_cases": ["future_live_turn_latency"]
+        }
+      ]
+    },
+    "gemini": {
+      "chat_llm": [
+        {
+          "model": "gemini-2.5-flash-lite",
+          "lane": "FAST_LLM",
+          "route_candidates": ["classification", "slot_extraction", "simple_summary", "low_latency_chat"],
+          "features": ["streaming", "function_calling", "structured_outputs", "implicit_context_caching", "explicit_context_caching", "google_search_grounding"],
+          "benchmark_cases": ["plain_chat", "prompt_cache_repeat", "reasoning_eval", "google_search_grounding"]
+        },
+        {
+          "model": "gemini-2.5-flash",
+          "lane": "FAST_LLM",
+          "route_candidates": ["fast_answer", "clarify", "memory_suggestion", "post_call_summary"],
+          "features": ["streaming", "function_calling", "structured_outputs", "implicit_context_caching", "explicit_context_caching", "google_search_grounding", "thinking"],
+          "benchmark_cases": ["plain_chat", "prompt_cache_repeat", "reasoning_eval", "google_search_grounding"]
+        },
+        {
+          "model": "gemini-3.5-flash",
+          "lane": "SMART_LLM_STABLE",
+          "route_candidates": ["frontier_fast_answer", "agentic_reasoning", "quality_eval"],
+          "features": ["streaming", "function_calling", "structured_outputs", "implicit_context_caching", "explicit_context_caching", "google_search_grounding", "thinking"],
+          "benchmark_cases": ["plain_chat", "prompt_cache_repeat", "reasoning_eval", "google_search_grounding"]
+        },
+        {
+          "model": "gemini-3-flash-preview",
+          "lane": "FAST_LLM_PREVIEW",
+          "route_candidates": ["frontier_fast_answer", "multimodal_summary"],
+          "features": ["streaming", "function_calling", "structured_outputs", "implicit_context_caching", "explicit_context_caching", "google_search_grounding", "thinking"],
+          "benchmark_cases": ["plain_chat", "prompt_cache_repeat", "reasoning_eval", "google_search_grounding"]
+        }
+      ],
+      "asr": [
+        {
+          "model": "gemini-2.5-flash-lite",
+          "lane": "FAST_ASR_BATCH",
+          "features": ["audio_understanding", "batch_transcription"],
+          "benchmark_cases": ["batch_transcribe"]
+        },
+        {
+          "model": "gemini-2.5-flash",
+          "lane": "FAST_ASR_BATCH",
+          "features": ["audio_understanding", "batch_transcription", "emotion_detection_prompting"],
+          "benchmark_cases": ["batch_transcribe"]
+        }
+      ],
+      "tts": [
+        {
+          "model": "gemini-2.5-flash-preview-tts",
+          "lane": "FAST_TTS_PREVIEW",
+          "features": ["single_speaker_tts", "multispeaker_tts", "style_prompting", "streaming_sentence_level"],
+          "benchmark_cases": ["tts_ttfb", "tts_sentence_stream"]
+        }
+      ],
+      "live": [
+        {
+          "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+          "lane": "LIVE_AUDIO",
+          "features": ["live_api", "input_audio_transcription", "native_audio_output", "thinking"],
+          "benchmark_cases": ["future_live_turn_latency"]
+        }
+      ]
+    }
+  }
+}

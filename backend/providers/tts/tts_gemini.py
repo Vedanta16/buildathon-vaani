@@ -20,7 +20,7 @@ def _parse_sample_rate(mime_type: str) -> int:
 
 class GeminiTTS:
     """
-    Streaming TTS via gemini-3.1-flash-tts-preview.
+    Streaming TTS via configured Gemini TTS model.
     Emits TtsAudioChunk events per streamed chunk, then TtsDone.
     """
 
@@ -51,7 +51,7 @@ class GeminiTTS:
         )
 
         async for chunk in await self._client.aio.models.generate_content_stream(
-            model="gemini-3.1-flash-tts-preview",
+            model=cfg.gemini_tts_model,
             contents=contents,
             config=config,
         ):

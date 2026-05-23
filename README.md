@@ -16,13 +16,13 @@ FastAPI /ws/{session_id}
     │     ├─ gemini_live   (Gemini 2.5 Flash Native Audio)
     │     └─ openai_realtime (GPT-4o Realtime)
     │
-    ├─ LLM (OpenAI) ──► streaming tokens
-    │     ├─ Smart routing: short turns → gpt-4o-mini
+    ├─ LLM (Gemini streaming live path) ──► streaming tokens
+    │     ├─ Sentence accumulator for streaming TTS
     │     ├─ Speculative generation (400ms debounce)
-    │     └─ Prompt caching (static system prompt prefix)
+    │     └─ OpenAI routing module available for benchmark/routing experiments
     │
     └─ TTS provider ──► PCM audio chunks
-          ├─ gemini   (Gemini 2.5 Flash TTS — Aoede voice)
+          ├─ gemini   (Gemini Flash TTS — configured voice)
           └─ openai   (TTS-1 — streaming)
 
 Browser playback (24kHz PCM, AudioContext queue)
@@ -51,7 +51,7 @@ pip install -r backend/requirements.txt
 
 # 3. Set API keys (required)
 export GEMINI_API_KEY="your-gemini-key"
-export OPENAI_API_KEY="your-openai-key"   # needed for LLM; TTS optional
+export OPENAI_API_KEY="your-openai-key"   # needed for OpenAI ASR/TTS providers
 ```
 
 Or create a `.env` file in the project root:
@@ -89,10 +89,40 @@ Selectable in the top bar during a call:
 
 | Control | Options | Notes |
 |---------|---------|-------|
-| ASR | `gemini_live` (default), `openai_realtime` | Gemini key is baked in; OpenAI needs `OPENAI_API_KEY` |
-| TTS | `gemini` (default), `openai` | Gemini: full audio per sentence; OpenAI: streaming |
+| ASR | `gemini_live` (default), `openai_realtime` | Uses `GEMINI_API_KEY` or `OPENAI_API_KEY` from env |
+| TTS | `gemini` (default), `openai` | Both stream audio chunks sentence-by-sentence |
 
-> **Default is Gemini for both** since the key is pre-configured. Switch to OpenAI providers once you have a key.
+> **Default is Gemini for both**. Add `GEMINI_API_KEY` and `OPENAI_API_KEY` to `.env`; no API key is baked into the repo.
+
+The benchmark winners are recommendations, not hard-coded product choices. The UI provider selectors remain the runtime source of truth for ASR and TTS provider choice on each call.
+
+## Live Smoke
+
+Start the backend first:
+
+```bash
+uvicorn backend.main:app --reload --port 8000
+```
+
+Default Gemini ASR/TTS smoke:
+
+```bash
+python3 -m backend.scripts.live_smoke \
+  --audio backend/harvard.wav \
+  --asr-provider gemini_live \
+  --tts-provider gemini
+```
+
+OpenAI ASR/TTS smoke:
+
+```bash
+python3 -m backend.scripts.live_smoke \
+  --audio backend/harvard.wav \
+  --asr-provider openai_realtime \
+  --tts-provider openai
+```
+
+The smoke streams `backend/harvard.wav` as 16 kHz PCM frames to `/ws/{session_id}` and waits for `asr.final`, a non-empty `llm.response`, at least one `tts.audio_chunk`, `tts.done`, and `metrics.turn` with `asr_streaming=true`, `tts_streaming=true`, and `vad_mode=local_manual`.
 
 ## Feature Toggles
 
@@ -141,6 +171,9 @@ Buildathon/
 │   ├── recording.py                ← WAV recorder (user + agent channels)
 │   ├── db.py                       ← SQLite session store (aiosqlite)
 │   ├── requirements.txt
+│   ├── harvard.wav                 ← live smoke audio fixture
+│   ├── scripts/
+│   │   └── live_smoke.py           ← live WebSocket smoke runner
 │   └── providers/
 │       ├── asr/
 │       │   ├── factory.py
@@ -168,7 +201,7 @@ Buildathon/
 - **Recording playback**: backend writes `recordings/{session_id}.wav` but no HTTP endpoint serves it
 - **Filler audio**: `filler_audio/` directory is empty — drop `.wav` files there to enable
 - **Phrase cache**: pre-populate with `python -m backend.scripts.pregen_phrases` (needs script update)
-- **OpenAI LLM key**: LLM always uses OpenAI — set `OPENAI_API_KEY` or the agent won't respond
+- **Provider keys**: set `OPENAI_API_KEY` and `GEMINI_API_KEY` in `.env`; backend config loads `.env` directly even when started without `start.sh`
 - **Memory toggle**: UI wired but backend memory recall not implemented
 - **Speculative generation**: `spec_manager.on_final` result not currently emitted to frontend as a distinct event
 
@@ -176,7 +209,11 @@ Buildathon/
 
 | Variable | Required | Default | Notes |
 |----------|----------|---------|-------|
-| `GEMINI_API_KEY` | For Gemini ASR/TTS | baked in config.py | Replace with your own |
-| `OPENAI_API_KEY` | For LLM (always) + OpenAI ASR/TTS | placeholder | **Must set for agent to respond** |
+| `GEMINI_API_KEY` | For live LLM + Gemini ASR/TTS | placeholder | **Must set for Gemini providers and current live LLM path** |
+| `OPENAI_API_KEY` | For OpenAI ASR/TTS | placeholder | **Must set for OpenAI providers** |
 | `ASR_PROVIDER` | No | `gemini_live` | Override default provider |
 | `TTS_PROVIDER` | No | `gemini` | Override default provider |
+| `OPENAI_REALTIME_MODEL` | No | `gpt-4o-realtime-preview` | OpenAI realtime transport model |
+| `OPENAI_TRANSCRIPTION_MODEL` | No | `gpt-realtime-whisper` | OpenAI realtime transcription model |
+| `GEMINI_LIVE_MODEL` | No | `gemini-2.5-flash-native-audio-latest` | Gemini Live ASR model |
+| `GEMINI_TTS_MODEL` | No | `gemini-2.5-flash-preview-tts` | Gemini TTS model |

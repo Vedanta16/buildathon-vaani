@@ -41,7 +41,7 @@ if [[ -z "${OPENAI_API_KEY:-}" || "${OPENAI_API_KEY}" == "YOUR_OPENAI_API_KEY" ]
   warn "Set it in .env or: export OPENAI_API_KEY=sk-..."
 fi
 
-if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+if [[ -z "${GEMINI_API_KEY:-}" || "${GEMINI_API_KEY}" == "YOUR_GEMINI_API_KEY" ]]; then
   warn "GEMINI_API_KEY not set — Gemini ASR/TTS will fail"
 fi
 

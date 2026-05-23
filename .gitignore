@@ -19,3 +19,4 @@ filler_audio/
 recordings/
 *.wav
 *.pcm
+!backend/harvard.wav

@@ -22,3 +22,10 @@ def test_vad_processes_frames_when_agent_not_playing(vad):
 
 def test_vad_agent_playing_defaults_false(vad):
     assert vad.agent_playing is False
+
+def test_vad_barge_in_path_processes_while_agent_playing(vad):
+    vad.agent_playing = True
+    silence = np.zeros(512, dtype=np.int16).tobytes()
+    result = vad.process_barge_in(silence)
+    assert result is False
+    assert vad._last_prob is not None

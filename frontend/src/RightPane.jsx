@@ -63,10 +63,10 @@ function PipelineTrace({ state }) {
     totalMs = Math.max(1, (latestTurn.tts_first_audio_ms || 0) - latestTurn.vad_start_ms);
     specHit = latestTurn.spec_hit;
     segs = [];
-    if (asrMs > 0) segs.push({ kind: "asr", label: "ASR", ms: asrMs, prov: latestTurn.asr_provider || "" });
+    if (asrMs > 0) segs.push({ kind: "asr", label: latestTurn.asr_streaming ? "ASR stream" : "ASR", ms: asrMs, prov: latestTurn.asr_provider || "" });
     if (fillerMs > 0) segs.push({ kind: "filler", label: "Filler", ms: fillerMs });
     if (llmMs > 0) segs.push({ kind: "llm", label: "LLM TTFT", ms: llmMs, prov: latestTurn.model || "gpt-4o" });
-    if (ttsMs > 0) segs.push({ kind: "tts", label: latestTurn.phrase_cache_hit ? "TTS·cached" : "TTS TTFB", ms: ttsMs, prov: latestTurn.tts_provider || "" });
+    if (ttsMs > 0) segs.push({ kind: "tts", label: latestTurn.tts_streaming ? "TTS stream" : "TTS TTFB", ms: ttsMs, prov: latestTurn.tts_provider || "" });
     if (segs.length === 0) {
       segs = MOCK_DATA.pipeline.segs;
       totalMs = MOCK_DATA.pipeline.totalMs;
@@ -88,6 +88,8 @@ function PipelineTrace({ state }) {
           {" "}· {segs.length} stages
           {specHit && <span style={{ color: "var(--accent)", marginLeft: 8 }}>· spec ✓</span>}
           {latestTurn && <span style={{ color: "var(--accent)", marginLeft: 8 }}>· live</span>}
+          {latestTurn?.asr_streaming && <span style={{ color: "var(--accent)", marginLeft: 8 }}>· ASR stream</span>}
+          {latestTurn?.tts_streaming && <span style={{ color: "var(--accent)", marginLeft: 8 }}>· TTS stream</span>}
         </span>
       }
     >
@@ -119,6 +121,8 @@ function PipelineTrace({ state }) {
         <span><span className="swatch" style={{ background: "#3B3A2A" }} />LLM</span>
         <span><span className="swatch" style={{ background: "#2D4A38" }} />TTS</span>
         <span><span className="swatch" style={{ background: "var(--accent-dim)" }} />TTS · cached</span>
+        {latestTurn && <span>VAD: {latestTurn.vad_mode || "unknown"}</span>}
+        {latestTurn?.tts_sentence_count > 0 && <span>sentences: {latestTurn.tts_sentence_count}</span>}
       </div>
     </Section>
   );

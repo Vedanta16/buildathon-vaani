@@ -1,6 +1,13 @@
 from typing import Callable
 from backend.config import cfg
 
+ASR_PROVIDERS = frozenset({"mock", "openai_realtime", "gemini_live"})
+
+
+def registered_asr_providers() -> frozenset[str]:
+    return ASR_PROVIDERS
+
+
 def create_asr(on_event: Callable, provider: str | None = None):
     p = provider or cfg.asr_provider
     if p == "mock":
