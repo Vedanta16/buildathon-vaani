@@ -3,6 +3,8 @@ import TopBar from './TopBar.jsx';
 import Transcript from './Transcript.jsx';
 import RightPane from './RightPane.jsx';
 
+const API_BASE = "http://localhost:8000";
+
 export default function App() {
   const [state, setState] = React.useState({
     userId: "demo-user",
@@ -24,6 +26,11 @@ Speak in short sentences. Never use markdown or lists.
 If unsure about policy details, say so.`,
     activeTab: "live",
     metricsHistory: [],
+    routeHistory: [],
+    postCallReport: null,
+    memorySuggestions: [],
+    postCallLoading: false,
+    postCallError: null,
   });
 
   const wsRef = React.useRef(null);
@@ -40,6 +47,32 @@ If unsure about policy details, say so.`,
   const [partialText, setPartialText] = React.useState("");
   const [status, setStatus] = React.useState("idle");
   const [wsError, setWsError] = React.useState(null);
+
+  async function loadPostCallArtifacts(sessionId) {
+    if (!sessionId) return;
+    setState(s => ({ ...s, postCallLoading: true, postCallError: null }));
+    try {
+      const reportRes = await fetch(`${API_BASE}/sessions/${sessionId}/post-call-report`);
+      if (!reportRes.ok) throw new Error(`post-call report failed: ${reportRes.status}`);
+      const reportBody = await reportRes.json();
+      const suggestionsRes = await fetch(`${API_BASE}/sessions/${sessionId}/memory-suggestions`);
+      const suggestionsBody = suggestionsRes.ok ? await suggestionsRes.json() : { suggestions: [] };
+      setState(s => ({
+        ...s,
+        postCallReport: reportBody.report,
+        memorySuggestions: suggestionsBody.suggestions || [],
+        postCallLoading: false,
+        postCallError: null,
+        activeTab: "report",
+      }));
+    } catch (err) {
+      setState(s => ({
+        ...s,
+        postCallLoading: false,
+        postCallError: err.message || "Failed to load post-call report",
+      }));
+    }
+  }
 
   function playNextChunk() {
     if (isPlayingRef.current || playbackQueueRef.current.length === 0) return;
@@ -84,8 +117,26 @@ If unsure about policy details, say so.`,
       case "llm.response":
         setTranscript(t => [...t, { role: "agent", text: msg.text, ts: Date.now() }]);
         break;
+      case "turn.route":
+        setState(s => ({ ...s, routeHistory: [...s.routeHistory, msg.route] }));
+        break;
       case "metrics.turn":
         setState(s => ({ ...s, metricsHistory: [...s.metricsHistory, msg.turn] }));
+        break;
+      case "post_call_eval.started":
+        setState(s => ({ ...s, postCallLoading: true, postCallError: null }));
+        break;
+      case "post_call_eval.completed":
+        setState(s => ({
+          ...s,
+          postCallReport: msg.report,
+          postCallLoading: false,
+          postCallError: null,
+        }));
+        loadPostCallArtifacts(msg.session_id);
+        break;
+      case "post_call_eval.error":
+        setState(s => ({ ...s, postCallLoading: false, postCallError: msg.message }));
         break;
       case "playback.cancel":
       case "barge_in":
@@ -105,9 +156,30 @@ If unsure about policy details, say so.`,
 
     const sessionId = `session-${Date.now()}`;
     // Capture current settings before any async gaps
-    const { asrProvider, ttsProvider, smartRouting, speculative, userId, systemPrompt } = state;
+    const {
+      asrProvider,
+      ttsProvider,
+      smartRouting,
+      speculative,
+      filler,
+      phraseCache,
+      memory,
+      userId,
+      systemPrompt,
+    } = state;
 
-    setState(s => ({ ...s, calling: true, sessionId, metricsHistory: [] }));
+    setState(s => ({
+      ...s,
+      calling: true,
+      sessionId,
+      metricsHistory: [],
+      routeHistory: [],
+      postCallReport: null,
+      memorySuggestions: [],
+      postCallLoading: false,
+      postCallError: null,
+      activeTab: "live",
+    }));
 
     callStartRef.current = Date.now();
     timerRef.current = setInterval(() => {
@@ -140,7 +212,17 @@ If unsure about policy details, say so.`,
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => {
-        const cfg = { user_id: userId, asr_provider: asrProvider, tts_provider: ttsProvider, smart_routing: smartRouting, spec_enabled: speculative, system_prompt: systemPrompt };
+        const cfg = {
+          user_id: userId,
+          asr_provider: asrProvider,
+          tts_provider: ttsProvider,
+          smart_routing: smartRouting,
+          spec_enabled: speculative,
+          filler,
+          phrase_cache: phraseCache,
+          memory,
+          system_prompt: systemPrompt,
+        };
         console.log('[WS] open, sending config', cfg);
         ws.send(JSON.stringify(cfg));
         setStatus("live");
@@ -197,6 +279,7 @@ If unsure about policy details, say so.`,
   }
 
   async function stopCall() {
+    const sessionId = state.sessionId;
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     setState(s => ({ ...s, calling: false, callTimer: "00:00" }));
     setStatus("idle");
@@ -206,6 +289,7 @@ If unsure about policy details, say so.`,
     streamRef.current?.getTracks().forEach(t => t.stop()); streamRef.current = null;
     wsRef.current?.close(); wsRef.current = null;
     if (audioCtxRef.current) { await audioCtxRef.current.close().catch(() => {}); audioCtxRef.current = null; }
+    await loadPostCallArtifacts(sessionId);
   }
 
   return (

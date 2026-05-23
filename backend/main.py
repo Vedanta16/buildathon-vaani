@@ -6,7 +6,7 @@ import logging
 import re
 import time
 import uuid
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import aiosqlite
 from backend.db import DB_PATH
@@ -15,7 +15,20 @@ logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message
 logger = logging.getLogger("voice_session")
 
 from backend.config import cfg
-from backend.db import init_db, create_session, append_turn, close_session
+from backend.db import (
+    init_db,
+    create_session,
+    append_turn,
+    close_session,
+    get_post_call_eval,
+    get_memory_suggestion_decisions,
+    get_session,
+    get_session_turns,
+    get_user_memory_blob,
+    save_memory_suggestion_decision,
+    save_post_call_eval,
+    save_user_memory_blob,
+)
 from backend.events import AsrPartial, AsrFinal, TtsAudioChunk, TtsDone
 from backend.vad import VAD
 from backend.llm_gemini import stream_response
@@ -27,6 +40,31 @@ from backend.metrics import SessionMetrics
 from backend.recording import Recorder
 from backend.providers.asr.factory import create_asr, registered_asr_providers
 from backend.providers.tts.factory import create_tts, registered_tts_providers
+from backend.conversation.memory import (
+    filter_memory_for_turn,
+    memory_items_from_blob,
+    memory_items_to_blob,
+)
+from backend.conversation.memory_suggestions import (
+    memory_item_from_suggestion,
+    suggestions_from_report,
+    upsert_reviewed_memory,
+)
+from backend.conversation.models import (
+    ConversationMessage,
+    MemoryItem,
+    RuntimeFlags,
+    TurnTimestamps,
+    UserTurn,
+)
+from backend.conversation.planner import (
+    is_safe_to_speak_text,
+    plan_for_deterministic_route,
+    plan_from_llm_response,
+)
+from backend.conversation.post_call import analyze_post_call
+from backend.conversation.prompts import render_live_chat_prompt
+from backend.conversation.routes import select_route
 
 app = FastAPI()
 app.add_middleware(
@@ -43,6 +81,16 @@ SYSTEM_PROMPT = (
 )
 
 SENTENCE_RE = re.compile(r"(.+?[.!?])(?:\s+|$)", re.DOTALL)
+
+
+def apply_live_chat_model(route):
+    if route.model is None:
+        return route
+    if route.lane == "SMART_LLM":
+        route.model = cfg.gemini_chat_smart_model
+    else:
+        route.model = cfg.gemini_chat_fast_model
+    return route
 
 
 class SentenceAccumulator:
@@ -129,6 +177,105 @@ async def get_sessions(limit: int = 20):
     return {"sessions": sessions}
 
 
+@app.get("/sessions/{session_id}/post-call-report")
+async def get_post_call_report(session_id: str, refresh: bool = False):
+    source, report = await ensure_post_call_report(session_id, refresh=refresh)
+    return {"session_id": session_id, "source": source, "report": report}
+
+
+async def ensure_post_call_report(session_id: str, refresh: bool = False) -> tuple[str, dict]:
+    if not refresh:
+        existing = await get_post_call_eval(session_id)
+        if existing:
+            return "stored", existing
+
+    turns = await get_session_turns(session_id)
+    if not turns:
+        raise HTTPException(status_code=404, detail="Session has no stored turns")
+
+    report = analyze_post_call(turns).to_dict()
+    await save_post_call_eval(session_id, report)
+    return "generated", report
+
+
+@app.get("/sessions/{session_id}/memory-suggestions")
+async def get_session_memory_suggestions(session_id: str, refresh: bool = False):
+    session = await get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _, report = await ensure_post_call_report(session_id, refresh=refresh)
+    decisions = await get_memory_suggestion_decisions(session_id)
+    suggestions = suggestions_from_report(
+        session_id,
+        session["user_id"],
+        report,
+        decisions,
+    )
+    return {"session_id": session_id, "user_id": session["user_id"], "suggestions": suggestions}
+
+
+@app.post("/memory-suggestions/{suggestion_id}/decision")
+async def decide_memory_suggestion(suggestion_id: str, payload: dict):
+    decision = payload.get("decision")
+    if decision not in {"accepted", "rejected"}:
+        raise HTTPException(status_code=400, detail="decision must be 'accepted' or 'rejected'")
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    session = await get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _, report = await ensure_post_call_report(session_id)
+    decisions = await get_memory_suggestion_decisions(session_id)
+    suggestions = suggestions_from_report(
+        session_id,
+        session["user_id"],
+        report,
+        decisions,
+    )
+    suggestion = next((s for s in suggestions if s["id"] == suggestion_id), None)
+    if not suggestion:
+        raise HTTPException(status_code=404, detail="Memory suggestion not found")
+
+    if decision == "accepted":
+        existing_items = memory_items_from_blob(await get_user_memory_blob(session["user_id"]))
+        memory_item = memory_item_from_suggestion(suggestion)
+        await save_user_memory_blob(
+            session["user_id"],
+            memory_items_to_blob(upsert_reviewed_memory(existing_items, memory_item)),
+        )
+
+    await save_memory_suggestion_decision(
+        suggestion_id,
+        session_id,
+        session["user_id"],
+        decision,
+        suggestion,
+    )
+    return {
+        "id": suggestion_id,
+        "session_id": session_id,
+        "user_id": session["user_id"],
+        "status": decision,
+        "suggestion": suggestion,
+    }
+
+
+@app.get("/users/{user_id}/memory")
+async def get_user_memory(user_id: str):
+    blob = await get_user_memory_blob(user_id)
+    items = memory_items_from_blob(blob)
+    return {"user_id": user_id, "items": [item.to_dict() for item in items]}
+
+
+@app.put("/users/{user_id}/memory")
+async def put_user_memory(user_id: str, payload: dict):
+    items = memory_items_from_blob(payload)
+    await save_user_memory_blob(user_id, memory_items_to_blob(items))
+    return {"user_id": user_id, "items": [item.to_dict() for item in items]}
+
+
 @app.websocket("/ws/{session_id}")
 async def voice_session(ws: WebSocket, session_id: str):
     await ws.accept()
@@ -145,6 +292,9 @@ async def voice_session(ws: WebSocket, session_id: str):
     tts_provider = config.get("tts_provider", cfg.tts_provider)
     smart_routing = config.get("smart_routing", True)
     spec_enabled = config.get("spec_enabled", True)
+    filler_enabled = config.get("filler", True)
+    phrase_cache_enabled = config.get("phrase_cache", True)
+    memory_enabled = config.get("memory", False)
     system_prompt = config.get("system_prompt", SYSTEM_PROMPT) or SYSTEM_PROMPT
 
     async def send_startup_error(message: str):
@@ -174,6 +324,13 @@ async def voice_session(ws: WebSocket, session_id: str):
     except Exception:
         pass
 
+    reviewed_memory_items: list[MemoryItem] = []
+    if memory_enabled:
+        try:
+            reviewed_memory_items = memory_items_from_blob(await get_user_memory_blob(user_id))
+        except Exception:
+            logger.warning("Failed to load reviewed memory for user %s", user_id, exc_info=True)
+
     try:
         session_metrics = SessionMetrics()
         recorder = Recorder(session_id=session_id)
@@ -186,6 +343,8 @@ async def voice_session(ws: WebSocket, session_id: str):
         await ws.close()
         return
     conversation_history: list[dict] = []
+    pending_user_turn: UserTurn | None = None
+    pending_route = None
 
     # VAD state machine: avoid flushing on every silence frame
     in_speech = False
@@ -206,6 +365,45 @@ async def voice_session(ws: WebSocket, session_id: str):
             await ws.send_bytes(header + b"|" + pcm_bytes)
         except Exception:
             pass
+
+    def runtime_flags() -> RuntimeFlags:
+        return RuntimeFlags(
+            smart_routing=bool(smart_routing),
+            speculative=bool(spec_enabled),
+            phrase_cache=bool(phrase_cache_enabled),
+            filler=bool(filler_enabled),
+            memory=bool(memory_enabled),
+        )
+
+    def conversation_messages() -> list[ConversationMessage]:
+        messages: list[ConversationMessage] = []
+        for msg in conversation_history:
+            role = "assistant" if msg["role"] == "assistant" else "user"
+            messages.append(ConversationMessage(role=role, content=msg["content"]))
+        return messages
+
+    def build_user_turn(user_text: str) -> UserTurn:
+        memory_context = filter_memory_for_turn(
+            user_text,
+            reviewed_memory_items,
+            enabled=bool(memory_enabled),
+        )
+        return UserTurn(
+            session_id=session_id,
+            user_id=user_id,
+            turn_id=turn_state.get("turn_id") or str(uuid.uuid4()),
+            user_text=user_text,
+            asr_provider=asr_provider,
+            vad_mode="local_manual",
+            timestamps=TurnTimestamps(
+                vad_start_ms=turn_state.get("vad_start_ms"),
+                asr_first_partial_ms=turn_state.get("asr_first_partial_ms"),
+                asr_final_ms=turn_state.get("asr_final_ms"),
+            ),
+            conversation_history=conversation_messages(),
+            memory_context=memory_context,
+            runtime_flags=runtime_flags(),
+        )
 
     playback_epoch = 0
 
@@ -264,7 +462,7 @@ async def voice_session(ws: WebSocket, session_id: str):
             "sentence_index": sentence_index,
             "text": sentence,
         })
-        cached_pcm = phrase_cache.lookup(sentence)
+        cached_pcm = phrase_cache.lookup(sentence) if phrase_cache_enabled else None
         if cached_pcm:
             turn_state["phrase_cache_hit"] = True
             await handle_tts_event(TtsAudioChunk(
@@ -309,7 +507,65 @@ async def voice_session(ws: WebSocket, session_id: str):
                 barge_in_handler.clear_tts_task(self._task)
 
     # --- LLM + TTS pipeline ---
-    async def run_llm_tts(user_text: str):
+    async def run_plan_tts(plan, user_turn: UserTurn | None = None):
+        turn_state["llm_streaming"] = False
+        turn_state["tts_streaming"] = True
+        turn_state["tts_sentence_count"] = 0
+        sentence_tts = SentenceTTSStreamer()
+        for segment in plan.spoken_segments:
+            if (
+                segment.should_speak
+                and segment.text
+                and (user_turn is None or is_safe_to_speak_text(user_turn, segment.text))
+            ):
+                sentence_tts.enqueue(segment.text)
+        await send_json({
+            "type": "llm.response",
+            "text": plan.display_text,
+            "assistant_turn_id": plan.assistant_turn_id,
+            "route": plan.route.to_dict(),
+            "validation": plan.validation.to_dict(),
+        })
+        await sentence_tts.finish()
+        if not turn_state.get("tts_start_ms"):
+            await handle_tts_event(TtsDone(provider="no_speech"))
+        turn_metrics = {
+            **turn_state,
+            **plan.metrics,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cached_tokens": 0,
+            "asr_provider": asr_provider,
+            "tts_provider": tts_provider,
+            "vad_mode": "local_manual",
+            "asr_streaming": True,
+            "tts_streaming": True,
+            "asr_transport": asr_provider,
+            "tts_transport": tts_provider,
+            "assistant_turn_id": plan.assistant_turn_id,
+            "display_matches_spoken": plan.validation.display_matches_spoken,
+            "safe_to_speak": plan.validation.safe_to_speak,
+            "contains_private_memory": plan.validation.contains_private_memory,
+        }
+        await append_turn(session_id, "assistant", plan.display_text, session_metrics.now_ms(), turn_metrics)
+        await send_json({"type": "metrics.turn", "turn": turn_metrics})
+
+    async def run_post_call_job():
+        await send_json({"type": "post_call_eval.started", "session_id": session_id})
+        try:
+            turns = await get_session_turns(session_id)
+            report = analyze_post_call(turns).to_dict()
+            await save_post_call_eval(session_id, report)
+            await send_json({
+                "type": "post_call_eval.completed",
+                "session_id": session_id,
+                "report": report,
+            })
+        except Exception as e:
+            logger.error("Post-call eval failed: %s", e, exc_info=True)
+            await send_json({"type": "post_call_eval.error", "message": str(e)})
+
+    async def run_llm_tts(user_turn: UserTurn, route):
         turn_state["llm_start_ms"] = session_metrics.now_ms()
         turn_state["llm_streaming"] = True
         turn_state["tts_streaming"] = True
@@ -321,19 +577,46 @@ async def voice_session(ws: WebSocket, session_id: str):
             if not turn_state.get("llm_first_token_ms"):
                 turn_state["llm_first_token_ms"] = session_metrics.now_ms()
             for sentence in sentence_acc.push(token):
-                sentence_tts.enqueue(sentence)
+                if is_safe_to_speak_text(user_turn, sentence):
+                    sentence_tts.enqueue(sentence)
+                else:
+                    turn_state["blocked_unsafe_sentence"] = True
 
         try:
+            llm_system_prompt = render_live_chat_prompt(
+                user_turn,
+                route,
+                base_system_prompt=system_prompt,
+                include_conversation=False,
+            )
             full_text, usage = await stream_response(
                 messages=conversation_history,
-                system_prompt=system_prompt,
+                system_prompt=llm_system_prompt,
                 on_token=on_token,
+                model=route.model,
             )
             for sentence in sentence_acc.drain():
-                sentence_tts.enqueue(sentence)
-            conversation_history.append({"role": "assistant", "content": full_text})
-            await send_json({"type": "llm.response", "text": full_text})
+                if is_safe_to_speak_text(user_turn, sentence):
+                    sentence_tts.enqueue(sentence)
+                else:
+                    turn_state["blocked_unsafe_sentence"] = True
+            plan = plan_from_llm_response(
+                user_turn,
+                full_text,
+                route=route,
+                usage=usage,
+            )
+            conversation_history.append({"role": "assistant", "content": plan.display_text})
+            await send_json({
+                "type": "llm.response",
+                "text": plan.display_text,
+                "assistant_turn_id": plan.assistant_turn_id,
+                "route": plan.route.to_dict(),
+                "validation": plan.validation.to_dict(),
+            })
             await sentence_tts.finish()
+            if not turn_state.get("tts_start_ms"):
+                await handle_tts_event(TtsDone(provider="no_speech"))
         except asyncio.CancelledError:
             await sentence_tts.cancel()
             raise
@@ -346,7 +629,7 @@ async def voice_session(ws: WebSocket, session_id: str):
         # Emit turn metrics
         turn_metrics = {
             **turn_state,
-            **(usage or {}),
+            **plan.metrics,
             "asr_provider": asr_provider,
             "tts_provider": tts_provider,
             "vad_mode": "local_manual",
@@ -354,8 +637,12 @@ async def voice_session(ws: WebSocket, session_id: str):
             "tts_streaming": True,
             "asr_transport": asr_provider,
             "tts_transport": tts_provider,
+            "assistant_turn_id": plan.assistant_turn_id,
+            "display_matches_spoken": plan.validation.display_matches_spoken,
+            "safe_to_speak": plan.validation.safe_to_speak,
+            "contains_private_memory": plan.validation.contains_private_memory,
         }
-        await append_turn(session_id, "assistant", full_text, session_metrics.now_ms(), turn_metrics)
+        await append_turn(session_id, "assistant", plan.display_text, session_metrics.now_ms(), turn_metrics)
         await send_json({"type": "metrics.turn", "turn": turn_metrics})
 
     # --- Speculation ---
@@ -369,17 +656,31 @@ async def voice_session(ws: WebSocket, session_id: str):
     async def on_commit_async(committed_text: str, usage: dict):
         if not committed_text.strip():
             return
+        user_turn = pending_user_turn or build_user_turn(turn_state.get("active_user_text", ""))
+        route = pending_route or select_route(user_turn.user_text, user_turn.runtime_flags)
         turn_state["tts_streaming"] = True
         sentence_tts = SentenceTTSStreamer()
         sentence_acc = SentenceAccumulator()
         for sentence in sentence_acc.push(committed_text) + sentence_acc.drain():
-            sentence_tts.enqueue(sentence)
-        conversation_history.append({"role": "assistant", "content": committed_text})
-        await send_json({"type": "llm.response", "text": committed_text})
+            if is_safe_to_speak_text(user_turn, sentence):
+                sentence_tts.enqueue(sentence)
+            else:
+                turn_state["blocked_unsafe_sentence"] = True
+        plan = plan_from_llm_response(user_turn, committed_text, route=route, usage=usage)
+        conversation_history.append({"role": "assistant", "content": plan.display_text})
+        await send_json({
+            "type": "llm.response",
+            "text": plan.display_text,
+            "assistant_turn_id": plan.assistant_turn_id,
+            "route": plan.route.to_dict(),
+            "validation": plan.validation.to_dict(),
+        })
         await sentence_tts.finish()
+        if not turn_state.get("tts_start_ms"):
+            await handle_tts_event(TtsDone(provider="no_speech"))
         turn_metrics = {
             **turn_state,
-            **(usage or {}),
+            **plan.metrics,
             "asr_provider": asr_provider,
             "tts_provider": tts_provider,
             "vad_mode": "local_manual",
@@ -387,8 +688,12 @@ async def voice_session(ws: WebSocket, session_id: str):
             "tts_streaming": True,
             "asr_transport": asr_provider,
             "tts_transport": tts_provider,
+            "assistant_turn_id": plan.assistant_turn_id,
+            "display_matches_spoken": plan.validation.display_matches_spoken,
+            "safe_to_speak": plan.validation.safe_to_speak,
+            "contains_private_memory": plan.validation.contains_private_memory,
         }
-        await append_turn(session_id, "assistant", committed_text, session_metrics.now_ms(), turn_metrics)
+        await append_turn(session_id, "assistant", plan.display_text, session_metrics.now_ms(), turn_metrics)
         await send_json({"type": "metrics.turn", "turn": turn_metrics})
 
     def on_commit_sync(committed_text: str, usage: dict):
@@ -402,7 +707,7 @@ async def voice_session(ws: WebSocket, session_id: str):
 
     # --- ASR event handler ---
     async def handle_asr_event(event):
-        nonlocal in_speech
+        nonlocal in_speech, pending_route, pending_user_turn
         if isinstance(event, AsrPartial):
             logger.info("ASR partial: %r", event.text)
             turn_state["asr_partial_count"] = turn_state.get("asr_partial_count", 0) + 1
@@ -416,13 +721,43 @@ async def voice_session(ws: WebSocket, session_id: str):
             if not event.text.strip():
                 return
             logger.info("ASR final: %r", event.text)
+            turn_state["active_user_text"] = event.text
             turn_state["asr_final_ms"] = session_metrics.now_ms()
             conversation_history.append({"role": "user", "content": event.text})
             await append_turn(session_id, "user", event.text, session_metrics.now_ms())
             await send_json({"type": "asr.final", "text": event.text, "provider": event.provider})
 
+            user_turn = build_user_turn(event.text)
+            route = apply_live_chat_model(select_route(user_turn.user_text, user_turn.runtime_flags))
+            pending_user_turn = user_turn
+            pending_route = route
+            turn_state["lane"] = route.lane
+            turn_state["route"] = route.route
+            turn_state["route_reason"] = route.reason
+            turn_state["route_confidence"] = route.confidence
+            if route.model:
+                turn_state["route_model"] = route.model
+            if route.phrase_id:
+                turn_state["route_phrase_id"] = route.phrase_id
+            if user_turn.memory_context:
+                turn_state["memory_context_reason"] = user_turn.memory_context.reason
+                turn_state["memory_included_ids"] = user_turn.memory_context.included_ids
+                turn_state["memory_excluded_ids"] = user_turn.memory_context.excluded_ids
+            await send_json({"type": "turn.route", "route": route.to_dict()})
+
+            if route.lane == "ASYNC":
+                asyncio.create_task(run_post_call_job())
+
+            if route.lane in {"CACHE", "NO_LLM", "ASYNC"}:
+                plan = plan_for_deterministic_route(user_turn, route)
+                if plan:
+                    plan_task = asyncio.create_task(run_plan_tts(plan, user_turn))
+                    barge_in_handler.register_llm_task(plan_task)
+                    plan_task.add_done_callback(barge_in_handler.clear_llm_task)
+                    return
+
             # Filler audio
-            filler = get_filler_chunk()
+            filler = get_filler_chunk() if filler_enabled else None
             if filler:
                 turn_state["filler_played"] = True
                 await handle_tts_event(filler)
@@ -433,7 +768,7 @@ async def voice_session(ws: WebSocket, session_id: str):
                     turn_state["spec_hit"] = True
                     return
 
-            llm_task = asyncio.create_task(run_llm_tts(event.text))
+            llm_task = asyncio.create_task(run_llm_tts(user_turn, route))
             barge_in_handler.register_llm_task(llm_task)
             llm_task.add_done_callback(barge_in_handler.clear_llm_task)
 
@@ -497,6 +832,7 @@ async def voice_session(ws: WebSocket, session_id: str):
                     in_speech = True
                     previous_barge_ms = turn_state.get("barge_in_ms") if barge_detected else None
                     turn_state.clear()
+                    turn_state["turn_id"] = str(uuid.uuid4())
                     turn_state["vad_start_ms"] = session_metrics.now_ms()
                     turn_state["vad_mode"] = "local_manual"
                     turn_state["asr_streaming"] = True

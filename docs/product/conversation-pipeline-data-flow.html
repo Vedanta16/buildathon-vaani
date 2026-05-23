@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conversation Pipeline Data Flow</title>
+  <style>
+    :root {
+      --bg: #101114;
+      --panel: #17191d;
+      --panel-2: #202329;
+      --text: #f2f4f8;
+      --muted: #a6adb8;
+      --line: #3a414d;
+      --blue: #4c8dff;
+      --green: #3fbf7f;
+      --amber: #e6a93c;
+      --red: #e05d5d;
+      --purple: #a878ff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    header {
+      padding: 24px 28px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #121419;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      line-height: 1.15;
+      font-weight: 680;
+    }
+
+    .sub {
+      margin: 0;
+      color: var(--muted);
+      max-width: 960px;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: calc(100vh - 104px);
+    }
+
+    aside {
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      padding: 18px;
+    }
+
+    main {
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .control-title {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      margin: 0 0 10px;
+    }
+
+    button {
+      width: 100%;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 0 0 8px;
+      text-align: left;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    button.active {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 1px rgba(76, 141, 255, 0.35) inset;
+    }
+
+    .legend {
+      margin-top: 18px;
+      display: grid;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .legend span {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .canvas {
+      display: grid;
+      gap: 18px;
+    }
+
+    .band {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .band h2 {
+      font-size: 16px;
+      margin: 0 0 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(72px, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .node {
+      min-height: 74px;
+      border: 1px solid var(--line);
+      background: #14171c;
+      border-radius: 8px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      opacity: 0.38;
+      transition: border-color 120ms ease, opacity 120ms ease, background 120ms ease;
+    }
+
+    .node.active {
+      opacity: 1;
+      background: #1b2028;
+    }
+
+    .node.all {
+      opacity: 1;
+    }
+
+    .node strong {
+      font-size: 13px;
+      line-height: 1.25;
+    }
+
+    .node small {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .runtime { border-top: 3px solid var(--blue); }
+    .engine { border-top: 3px solid var(--green); }
+    .memory { border-top: 3px solid var(--purple); }
+    .async { border-top: 3px solid var(--amber); }
+    .safety { border-top: 3px solid var(--red); }
+
+    .span-2 { grid-column: span 2; }
+    .span-3 { grid-column: span 3; }
+    .span-4 { grid-column: span 4; }
+
+    .arrows {
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      margin: 12px 0 0;
+      background: #111318;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    code {
+      color: #d7e4ff;
+      background: #111318;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+
+    @media (max-width: 920px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      aside {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .grid {
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
+      }
+
+      .span-2, .span-3, .span-4 {
+        grid-column: span 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Conversation Pipeline Data Flow</h1>
+    <p class="sub">Interactive view of the V2V backend after the Engineer A integration work: live ASR/TTS runtime, conversation planning, route-aware prompts, memory, post-call analysis, and reviewed memory suggestions.</p>
+  </header>
+
+  <div class="shell">
+    <aside>
+      <p class="control-title">Highlight Layer</p>
+      <button class="active" data-filter="all">Full pipeline</button>
+      <button data-filter="runtime">Voice runtime</button>
+      <button data-filter="engine">Conversation engine</button>
+      <button data-filter="memory">Memory and suggestions</button>
+      <button data-filter="async">Post-call async</button>
+      <button data-filter="safety">Validation and safety</button>
+
+      <div class="legend">
+        <span><i class="dot" style="background: var(--blue)"></i> Engineer B voice runtime</span>
+        <span><i class="dot" style="background: var(--green)"></i> Engineer A planning</span>
+        <span><i class="dot" style="background: var(--purple)"></i> Memory</span>
+        <span><i class="dot" style="background: var(--amber)"></i> Async post-call</span>
+        <span><i class="dot" style="background: var(--red)"></i> Safety and validation</span>
+      </div>
+    </aside>
+
+    <main>
+      <div class="canvas">
+        <section class="band">
+          <h2>Live Turn</h2>
+          <div class="grid">
+            <div class="node runtime span-2" data-tags="runtime"><strong>Frontend console</strong><small>Sends provider choices, runtime flags, system prompt, and PCM frames.</small></div>
+            <div class="node runtime span-2" data-tags="runtime"><strong>WebSocket session</strong><small><code>/ws/{session_id}</code> validates providers and API keys.</small></div>
+            <div class="node runtime span-2" data-tags="runtime"><strong>VAD and ASR</strong><small>Local manual VAD streams audio to ASR and emits <code>asr.final</code>.</small></div>
+            <div class="node memory span-2" data-tags="memory engine"><strong>Reviewed memory</strong><small>Loads <code>memory_blobs</code> only when memory flag is enabled.</small></div>
+            <div class="node engine span-2" data-tags="engine memory"><strong>UserTurn</strong><small>Normalizes user text, history, timestamps, flags, and filtered memory.</small></div>
+            <div class="node engine span-2" data-tags="engine"><strong>Task router</strong><small>Selects lane, route, reason, confidence, model, and optional phrase ID.</small></div>
+          </div>
+          <div class="arrows">Frontend -> WebSocket -> VAD/ASR -> asr.final -> UserTurn -> Task router -> lane execution</div>
+        </section>
+
+        <section class="band">
+          <h2>Lane Execution</h2>
+          <div class="grid">
+            <div class="node engine span-3" data-tags="engine"><strong>NO_LLM / CACHE</strong><small>Deterministic planner creates an AssistantPlan without model latency.</small></div>
+            <div class="node engine span-3" data-tags="engine"><strong>FAST_LLM / SMART_LLM</strong><small>Route-aware prompt is rendered, then Gemini streams tokens.</small></div>
+            <div class="node async span-3" data-tags="async engine"><strong>ASYNC</strong><small>Starts post-call eval and returns a deterministic spoken acknowledgement.</small></div>
+            <div class="node safety span-3" data-tags="safety engine"><strong>AssistantPlan</strong><small>Contains display text, spoken segments, route, validation, memory jobs, and metrics.</small></div>
+          </div>
+          <div class="arrows">Router -> deterministic plan OR route-aware LLM prompt OR async post-call job -> AssistantPlan</div>
+        </section>
+
+        <section class="band">
+          <h2>Speech, Display, And Metrics</h2>
+          <div class="grid">
+            <div class="node safety span-3" data-tags="safety"><strong>Speech guard</strong><small>Blocks known private-memory leaks before sentence TTS playback.</small></div>
+            <div class="node runtime span-3" data-tags="runtime"><strong>TTS streaming</strong><small>Speaks safe sentence chunks and emits audio frames.</small></div>
+            <div class="node runtime span-3" data-tags="runtime"><strong>Frontend playback</strong><small>Receives binary <code>tts.audio_chunk</code> and <code>tts.done</code>.</small></div>
+            <div class="node engine span-3" data-tags="engine safety"><strong>Observability</strong><small>Emits <code>turn.route</code>, <code>llm.response</code>, validation, and <code>metrics.turn</code>.</small></div>
+          </div>
+          <div class="arrows">AssistantPlan -> safe spoken segments -> TTS -> audio_chunk/done -> UI
+AssistantPlan -> display_text -> llm.response -> UI transcript
+Metrics -> turns.metrics_json -> right panel/session history</div>
+        </section>
+
+        <section class="band">
+          <h2>Post-Call Memory Review</h2>
+          <div class="grid">
+            <div class="node async span-2" data-tags="async"><strong>Stored turns</strong><small>User and assistant turns are the source of post-call analysis.</small></div>
+            <div class="node async span-2" data-tags="async"><strong>Post-call report</strong><small>Summary, sentiment, outcome, action items, memory candidates, quality flags.</small></div>
+            <div class="node memory span-2" data-tags="memory async"><strong>Suggestions API</strong><small><code>GET /sessions/{id}/memory-suggestions</code></small></div>
+            <div class="node memory span-2" data-tags="memory"><strong>Decision API</strong><small><code>POST /memory-suggestions/{id}/decision</code></small></div>
+            <div class="node memory span-2" data-tags="memory"><strong>Reviewed memory</strong><small>Accepted suggestions are promoted into <code>memory_blobs</code>.</small></div>
+            <div class="node memory span-2" data-tags="memory engine"><strong>Future prompt</strong><small>Only reviewed, safe, relevant memory can enter future live prompts.</small></div>
+          </div>
+          <div class="arrows">Post-call report -> memory candidates -> pending suggestions -> accept/reject -> reviewed memory -> future MemoryContext</div>
+        </section>
+
+        <section class="band">
+          <h2>HTTP And WebSocket Surfaces</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Surface</th>
+                <th>Data</th>
+                <th>Owner</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>WS /ws/{session_id}</code></td><td>Live turn events, audio chunks, route, transcript, metrics</td><td>Shared</td></tr>
+              <tr><td><code>GET /sessions</code></td><td>Session history and turn metrics</td><td>Shared</td></tr>
+              <tr><td><code>GET /sessions/{id}/post-call-report</code></td><td>Post-call summary, sentiment, outcome, memory candidates</td><td>Engineer A</td></tr>
+              <tr><td><code>GET /sessions/{id}/memory-suggestions</code></td><td>Pending/accepted/rejected memory suggestions</td><td>Engineer A</td></tr>
+              <tr><td><code>POST /memory-suggestions/{id}/decision</code></td><td>Accept/reject memory candidate</td><td>Engineer A</td></tr>
+              <tr><td><code>GET /users/{id}/memory</code></td><td>Reviewed memory</td><td>Engineer A</td></tr>
+              <tr><td><code>PUT /users/{id}/memory</code></td><td>Replace reviewed memory</td><td>Engineer A</td></tr>
+            </tbody>
+          </table>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const buttons = [...document.querySelectorAll("button[data-filter]")];
+    const nodes = [...document.querySelectorAll(".node")];
+
+    function setFilter(filter) {
+      buttons.forEach((button) => button.classList.toggle("active", button.dataset.filter === filter));
+      nodes.forEach((node) => {
+        const tags = node.dataset.tags.split(" ");
+        node.classList.toggle("active", filter !== "all" && tags.includes(filter));
+        node.classList.toggle("all", filter === "all");
+      });
+    }
+
+    buttons.forEach((button) => button.addEventListener("click", () => setFilter(button.dataset.filter)));
+    setFilter("all");
+  </script>
+</body>
+</html>

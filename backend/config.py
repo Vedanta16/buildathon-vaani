@@ -43,6 +43,8 @@ class Config:
     openai_transcription_model: str = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "gpt-realtime-whisper")
     gemini_live_model: str = os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-latest")
     gemini_tts_model: str = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+    gemini_chat_fast_model: str = os.getenv("GEMINI_CHAT_FAST_MODEL", "gemini-2.5-flash")
+    gemini_chat_smart_model: str = os.getenv("GEMINI_CHAT_SMART_MODEL", "gemini-2.5-flash")
 
     large_model: str = "gpt-4o"
     small_model: str = "gpt-4o-mini"

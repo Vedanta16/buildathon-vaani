@@ -7,7 +7,11 @@ export default function TopBar({ state, setState, onStartCall, onStopCall }) {
     asrProvider, ttsProvider,
     filler, phraseCache, promptCache, speculative, memory,
     systemPromptOpen, systemPrompt,
+    routeHistory,
   } = state;
+  const latestRoute = routeHistory && routeHistory.length > 0
+    ? routeHistory[routeHistory.length - 1]
+    : null;
 
   const setKey = (k, v) => setState((s) => ({ ...s, [k]: v }));
 
@@ -43,7 +47,7 @@ export default function TopBar({ state, setState, onStartCall, onStopCall }) {
             type="button"
           >
             <span className="caret">{systemPromptOpen ? "▾" : "▸"}</span>
-            System Prompt
+          Prompt
           </button>
         </div>
 
@@ -82,10 +86,10 @@ export default function TopBar({ state, setState, onStartCall, onStopCall }) {
           <div className="system-prompt-inner">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--fg-tertiary)" }}>
-                System prompt · cached prefix · {systemPrompt.length} chars
+                Base voice policy · editable · {systemPrompt.length} chars
               </div>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--accent)" }}>
-                ● cache eligible
+                structured at runtime
               </div>
             </div>
             <textarea
@@ -93,6 +97,19 @@ export default function TopBar({ state, setState, onStartCall, onStopCall }) {
               onChange={(e) => setKey("systemPrompt", e.target.value)}
               spellCheck={false}
             />
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, marginTop: 8 }}>
+              {[
+                ["policy", "base voice policy"],
+                ["route", latestRoute ? `${latestRoute.lane} · ${latestRoute.reason}` : "pending turn.route"],
+                ["memory", memory ? "reviewed + filtered" : "disabled"],
+                ["phrases", phraseCache ? "phrase IDs enabled" : "phrase cache off"],
+              ].map(([label, value]) => (
+                <div key={label} style={{ border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "8px 10px", minWidth: 0 }}>
+                  <div style={{ fontSize: 10, color: "var(--fg-tertiary)", textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
+                  <div style={{ fontSize: 11, color: "var(--fg-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
