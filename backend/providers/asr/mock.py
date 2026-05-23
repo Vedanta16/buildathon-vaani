@@ -9,6 +9,9 @@ class MockASR:
     async def connect(self) -> None:
         pass
 
+    async def activity_start(self) -> None:
+        pass
+
     async def send_audio(self, pcm_bytes: bytes) -> None:
         self._buffer += pcm_bytes
         if len(self._buffer) >= 512:

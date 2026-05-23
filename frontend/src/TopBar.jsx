@@ -1,6 +1,7 @@
-/* Top bar: brand, call button, provider toggles, feature toggles, system prompt drawer */
+import React from 'react';
+import { Toggle, ProviderToggle } from './components.jsx';
 
-function TopBar({ state, setState, onStartCall, onStopCall }) {
+export default function TopBar({ state, setState, onStartCall, onStopCall }) {
   const {
     calling, callTimer,
     asrProvider, ttsProvider,
@@ -98,5 +99,3 @@ function TopBar({ state, setState, onStartCall, onStopCall }) {
     </React.Fragment>
   );
 }
-
-window.TopBar = TopBar;

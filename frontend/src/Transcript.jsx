@@ -1,6 +1,8 @@
-/* Left pane — live transcript */
+import React, { useRef, useEffect } from 'react';
+import { PanelHeader } from './components.jsx';
+import { MOCK_DATA } from './data.js';
 
-function Transcript({ calling, liveTranscript, partialText }) {
+export default function Transcript({ calling, liveTranscript, partialText }) {
   // Use live transcript during a call; fall back to mock only when idle
   const turns = calling
     ? (liveTranscript || []).map(t => ({
@@ -14,7 +16,7 @@ function Transcript({ calling, liveTranscript, partialText }) {
             body: t.text,
             ts: new Date(t.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
           }))
-        : (window.MOCK_DATA ? window.MOCK_DATA.transcript : []));
+        : MOCK_DATA.transcript);
 
   const scrollerRef = useRef(null);
 
@@ -73,7 +75,6 @@ function TranscriptTurn({ turn }) {
     turn.role === "agent" ? "Agent" :
     turn.role === "partial" ? "User…" : turn.role;
 
-  // Render agent body with memory-recall underlines if any
   let body;
   if (turn.memoryRefs && turn.memoryRefs.length > 0) {
     let remaining = turn.body;
@@ -107,5 +108,3 @@ function TranscriptTurn({ turn }) {
     </div>
   );
 }
-
-window.Transcript = Transcript;

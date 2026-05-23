@@ -1,13 +1,21 @@
 # backend/vad.py
+import time
 import numpy as np
 import torch
 
+
 class VAD:
+    # Silero requires exactly 512 samples at 16kHz, 256 at 8kHz
+    _CHUNK_SAMPLES = {16000: 512, 8000: 256}
+
     def __init__(self, sample_rate: int = 16000, threshold: float = 0.5):
         self.sample_rate = sample_rate
         self.threshold = threshold
         self.agent_playing: bool = False
         self._last_prob: float | None = None
+        self._cooldown_until: float = 0.0
+        self._was_paused: bool = False
+
         model, _ = torch.hub.load(
             repo_or_dir="snakers4/silero-vad",
             model="silero_vad",
@@ -16,14 +24,32 @@ class VAD:
         )
         self._model = model
         self._model.eval()
+        self._chunk = self._CHUNK_SAMPLES.get(sample_rate, 512)
+
+    def set_cooldown(self, ms: int = 500) -> None:
+        """Suppress VAD for `ms` ms after TTS ends to let speaker echo clear."""
+        self._cooldown_until = time.monotonic() + ms / 1000.0
 
     def process(self, pcm_bytes: bytes) -> float | None:
-        if self.agent_playing:
+        paused = self.agent_playing or time.monotonic() < self._cooldown_until
+
+        if paused:
+            self._was_paused = True
             return None
+
+        # Reset RNN state after any pause so stale hidden state doesn't corrupt scores
+        if self._was_paused:
+            self._model.reset_states()
+            self._was_paused = False
+
         samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        # Silero needs at least 512 samples at 16kHz
-        if len(samples) < 512:
-            samples = np.pad(samples, (0, 512 - len(samples)))
+
+        # Silero requires exactly chunk samples — trim or pad
+        if len(samples) < self._chunk:
+            samples = np.pad(samples, (0, self._chunk - len(samples)))
+        elif len(samples) > self._chunk:
+            samples = samples[: self._chunk]
+
         tensor = torch.from_numpy(samples).unsqueeze(0)
         with torch.no_grad():
             prob = self._model(tensor, self.sample_rate).item()

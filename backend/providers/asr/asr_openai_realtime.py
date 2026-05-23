@@ -53,6 +53,9 @@ class OpenAIRealtimeASR:
         except Exception:
             pass
 
+    async def activity_start(self) -> None:
+        pass  # OpenAI Realtime uses turn_detection=None; flush() commits the buffer
+
     async def send_audio(self, pcm_bytes: bytes) -> None:
         if not self._ws:
             return
