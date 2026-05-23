@@ -337,6 +337,37 @@ Use multiple caches with different goals.
 
 Prompt cache depends on byte-stable prefixes. Avoid injecting volatile data into the top of the prompt.
 
+## API Contracts
+
+Production v1 should define explicit backend contracts so the frontend does not infer state from ad hoc messages.
+
+Minimum WebSocket events:
+
+| Event | Direction | Purpose |
+| --- | --- | --- |
+| `turn.route` | server -> client | Route/lane/model decision for the current turn. |
+| `turn.ack` | server -> client | Immediate acknowledgement phrase ID and playback metadata. |
+| `turn.progress` | server -> client | Slow-work progress state, such as retrieval or tool execution. |
+| `turn.answer` | server -> client | Final structured answer segments. |
+| `metrics.turn` | server -> client | Turn-level observability row for the right panel. |
+| `playback.cancel` | server -> client | Stop active audio due to barge-in or cancellation. |
+| `async.started` | server -> client | Post-call or background job started. |
+| `async.completed` | server -> client | Post-call or background job completed. |
+
+Minimum HTTP endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /sessions` | Session history. |
+| `GET /sessions/{id}` | Session detail with turns and metrics. |
+| `GET /sessions/{id}/post-call-report` | Real post-call analysis. |
+| `GET /sessions/{id}/recording.wav` | Play/download stitched recording. |
+| `GET /users/{id}/memory` | Reviewed long-term memory. |
+| `GET /sessions/{id}/memory-suggestions` | Pending suggestions from post-call eval. |
+| `POST /memory-suggestions/{id}/decision` | Accept or reject a memory suggestion. |
+
+All events and endpoints should return explicit empty/loading/error states. The frontend should not synthesize fake fallback content.
+
 ## Memory And Personalization
 
 Memory should move the product from "who are you?" to "it knows me" without feeling invasive.
@@ -472,6 +503,53 @@ User clicks reject
   -> backend records rejection
   -> suggestion is not injected into future prompts
 ```
+
+## Privacy, Consent, And Retention
+
+Recording and memory features require clear boundaries.
+
+Production requirements:
+
+- Show that recording is active during a call.
+- Store recordings only for sessions where recording is enabled.
+- Make recording retention configurable.
+- Keep transcript, recording, post-call eval, and memory records linked to the session/user.
+- Do not save sensitive inferred facts as long-term memory without explicit approval.
+- Let reviewed memory be deleted or edited.
+- Keep rejected memory suggestions out of future prompts.
+- Mark tone/prosody output as inferred analysis, not factual truth.
+- Avoid using tone labels to make high-impact decisions about the user.
+
+Default retention policy for v1:
+
+- Keep session transcript and metrics.
+- Keep recording while the session report is needed.
+- Keep accepted memory until deleted.
+- Keep rejected memory suggestion fingerprints only to avoid repeated suggestions.
+
+## Failure And Degraded Modes
+
+The product should fail explicitly and preserve the live call when possible.
+
+| Failure | Behavior |
+| --- | --- |
+| Phrase cache miss | Fall back to live TTS. |
+| Prompt cache miss | Continue normally, log cache miss. |
+| Router uncertain | Use conservative route, usually `FAST_LLM` or `SMART_LLM` based on risk. |
+| Small model low confidence | Escalate to `SMART_LLM`. |
+| LLM error | Play cached apology/progress phrase, retry once if safe, then show failure. |
+| TTS error | Show text response and log audio failure. |
+| Post-call eval failure | Keep session data and allow retry. |
+| Recording stitch failure | Keep raw segments if available and show report without audio. |
+| Memory write failure | Do not lose suggestion decision; retry or show explicit error. |
+| Backend unavailable | Frontend shows unavailable state, not mock data. |
+
+Retry policy should be route-aware:
+
+- Do not retry deterministic/cache routes unless the cache read itself failed.
+- Retry transient provider errors once for live responses.
+- Move long retries to async where possible.
+- Log retry count per turn.
 
 ## Async Work
 
