@@ -295,6 +295,7 @@ async def voice_session(ws: WebSocket, session_id: str):
     filler_enabled = config.get("filler", True)
     phrase_cache_enabled = config.get("phrase_cache", True)
     memory_enabled = config.get("memory", False)
+    interruptions_enabled = config.get("interruptions_enabled", False)
     system_prompt = config.get("system_prompt", SYSTEM_PROMPT) or SYSTEM_PROMPT
 
     async def send_startup_error(message: str):
@@ -351,12 +352,31 @@ async def voice_session(ws: WebSocket, session_id: str):
 
     # Per-turn tracking dict (mutable so inner functions can update it)
     turn_state: dict = {}
+    input_gate = {"state": "open", "reason": "ready"}
 
     async def send_json(msg: dict):
         try:
             await ws.send_text(json.dumps(msg))
         except Exception:
             pass
+
+    async def set_input_gate(state: str, reason: str):
+        if input_gate["state"] == state and input_gate["reason"] == reason:
+            return
+        input_gate["state"] = state
+        input_gate["reason"] = reason
+        now = session_metrics.now_ms()
+        if state == "closed":
+            turn_state["input_gated"] = True
+            turn_state["input_gate_closed_ms"] = turn_state.get("input_gate_closed_ms", now)
+            if reason == "speaking":
+                turn_state["input_gate_speaking_ms"] = turn_state.get("input_gate_speaking_ms", now)
+        else:
+            closed_ms = turn_state.get("input_gate_closed_ms")
+            turn_state["input_gate_opened_ms"] = now
+            if closed_ms is not None:
+                turn_state["input_gate_duration_ms"] = max(0, now - closed_ms)
+        await send_json({"type": "input.gate", "state": state, "reason": reason})
 
     async def send_audio(pcm_bytes: bytes, meta: dict):
         """Send audio as binary frame: JSON_HEADER|PCM_BYTES"""
@@ -457,6 +477,7 @@ async def voice_session(ws: WebSocket, session_id: str):
         if not turn_state.get("first_sentence_tts_start_ms"):
             turn_state["first_sentence_tts_start_ms"] = now
         turn_state["last_sentence_tts_start_ms"] = now
+        await set_input_gate("closed", "speaking")
         await send_json({
             "type": "tts.sentence_start",
             "sentence_index": sentence_index,
@@ -529,6 +550,8 @@ async def voice_session(ws: WebSocket, session_id: str):
         await sentence_tts.finish()
         if not turn_state.get("tts_start_ms"):
             await handle_tts_event(TtsDone(provider="no_speech"))
+        await asyncio.sleep(0.5)
+        await set_input_gate("open", "ready")
         turn_metrics = {
             **turn_state,
             **plan.metrics,
@@ -537,6 +560,7 @@ async def voice_session(ws: WebSocket, session_id: str):
             "cached_tokens": 0,
             "asr_provider": asr_provider,
             "tts_provider": tts_provider,
+            "interruption_mode": "enabled" if interruptions_enabled else "disabled",
             "vad_mode": "local_manual",
             "asr_streaming": True,
             "tts_streaming": True,
@@ -624,7 +648,12 @@ async def voice_session(ws: WebSocket, session_id: str):
             await sentence_tts.cancel()
             logger.error("LLM error: %s", e)
             await send_json({"type": "error", "message": f"LLM error: {e}"})
+            await asyncio.sleep(0.5)
+            await set_input_gate("open", "ready")
             return
+
+        await asyncio.sleep(0.5)
+        await set_input_gate("open", "ready")
 
         # Emit turn metrics
         turn_metrics = {
@@ -632,6 +661,7 @@ async def voice_session(ws: WebSocket, session_id: str):
             **plan.metrics,
             "asr_provider": asr_provider,
             "tts_provider": tts_provider,
+            "interruption_mode": "enabled" if interruptions_enabled else "disabled",
             "vad_mode": "local_manual",
             "asr_streaming": True,
             "tts_streaming": True,
@@ -678,11 +708,14 @@ async def voice_session(ws: WebSocket, session_id: str):
         await sentence_tts.finish()
         if not turn_state.get("tts_start_ms"):
             await handle_tts_event(TtsDone(provider="no_speech"))
+        await asyncio.sleep(0.5)
+        await set_input_gate("open", "ready")
         turn_metrics = {
             **turn_state,
             **plan.metrics,
             "asr_provider": asr_provider,
             "tts_provider": tts_provider,
+            "interruption_mode": "enabled" if interruptions_enabled else "disabled",
             "vad_mode": "local_manual",
             "asr_streaming": True,
             "tts_streaming": True,
@@ -723,6 +756,7 @@ async def voice_session(ws: WebSocket, session_id: str):
             logger.info("ASR final: %r", event.text)
             turn_state["active_user_text"] = event.text
             turn_state["asr_final_ms"] = session_metrics.now_ms()
+            await set_input_gate("closed", "processing")
             conversation_history.append({"role": "user", "content": event.text})
             await append_turn(session_id, "user", event.text, session_metrics.now_ms())
             await send_json({"type": "asr.final", "text": event.text, "provider": event.provider})
@@ -792,7 +826,8 @@ async def voice_session(ws: WebSocket, session_id: str):
         return
 
     # --- Main receive loop ---
-    # 10 frames × 32ms = 320ms of consecutive silence before flushing ASR.
+    # Each browser frame is 512 samples at 16kHz, about 32ms. The default
+    # waits ~800ms so natural pauses do not cut the user's utterance short.
     # Without this, any brief mid-sentence pause cuts the utterance in half.
     SILENCE_FLUSH_FRAMES = cfg.vad_silence_flush_frames
     _frame_count = 0
@@ -806,8 +841,11 @@ async def voice_session(ws: WebSocket, session_id: str):
                 logger.info("Audio frames received: %d", _frame_count)
             recorder.append_user(message, session_metrics.now_ms())
 
+            if input_gate["state"] == "closed":
+                continue
+
             barge_detected = False
-            if turn_vad.agent_playing and barge_in_vad.process_barge_in(message):
+            if interruptions_enabled and turn_vad.agent_playing and barge_in_vad.process_barge_in(message):
                 barge_detected = True
                 ts_ms = session_metrics.now_ms()
                 await barge_in_handler.fire(ts_ms=ts_ms)
@@ -854,7 +892,8 @@ async def voice_session(ws: WebSocket, session_id: str):
                     if _silence_frames >= SILENCE_FLUSH_FRAMES:
                         in_speech = False
                         _silence_frames = 0
-                        logger.info("VAD: 320ms silence — flushing ASR")
+                        silence_ms = int(SILENCE_FLUSH_FRAMES * 1000 * 512 / cfg.sample_rate)
+                        logger.info("VAD: %dms silence — flushing ASR", silence_ms)
                         await asr.flush()
 
     except WebSocketDisconnect:

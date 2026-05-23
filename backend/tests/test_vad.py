@@ -1,10 +1,24 @@
 # backend/tests/test_vad.py
 import numpy as np
 import pytest
+import torch
 from backend.vad import VAD
 
+
+class FakeSileroModel:
+    def eval(self):
+        return self
+
+    def reset_states(self):
+        pass
+
+    def __call__(self, tensor, sample_rate):
+        return torch.tensor(0.0)
+
+
 @pytest.fixture
-def vad():
+def vad(monkeypatch):
+    monkeypatch.setattr("backend.vad.torch.hub.load", lambda *a, **kw: (FakeSileroModel(), None))
     return VAD(sample_rate=16000, threshold=0.5)
 
 def test_vad_skips_frames_when_agent_playing(vad):

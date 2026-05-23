@@ -40,12 +40,14 @@ If unsure about policy details, say so.`,
   const sourceRef = React.useRef(null);
   const playbackQueueRef = React.useRef([]);
   const isPlayingRef = React.useRef(false);
+  const inputGateOpenRef = React.useRef(true);
   const timerRef = React.useRef(null);
   const callStartRef = React.useRef(null);
 
   const [transcript, setTranscript] = React.useState([]);
   const [partialText, setPartialText] = React.useState("");
   const [status, setStatus] = React.useState("idle");
+  const [inputGate, setInputGate] = React.useState({ state: "open", reason: "ready" });
   const [wsError, setWsError] = React.useState(null);
 
   async function loadPostCallArtifacts(sessionId) {
@@ -138,6 +140,10 @@ If unsure about policy details, say so.`,
       case "post_call_eval.error":
         setState(s => ({ ...s, postCallLoading: false, postCallError: msg.message }));
         break;
+      case "input.gate":
+        inputGateOpenRef.current = msg.state !== "closed";
+        setInputGate({ state: msg.state || "open", reason: msg.reason || "ready" });
+        break;
       case "playback.cancel":
       case "barge_in":
         stopPlayback();
@@ -153,6 +159,8 @@ If unsure about policy details, say so.`,
     setWsError(null);
     setTranscript([]);
     setPartialText("");
+    inputGateOpenRef.current = true;
+    setInputGate({ state: "open", reason: "ready" });
 
     const sessionId = `session-${Date.now()}`;
     // Capture current settings before any async gaps
@@ -218,6 +226,7 @@ If unsure about policy details, say so.`,
           tts_provider: ttsProvider,
           smart_routing: smartRouting,
           spec_enabled: speculative,
+          interruptions_enabled: false,
           filler,
           phrase_cache: phraseCache,
           memory,
@@ -263,6 +272,7 @@ If unsure about policy details, say so.`,
 
       processor.onaudioprocess = (e) => {
         if (ws.readyState !== WebSocket.OPEN) return;
+        if (!inputGateOpenRef.current) return;
         const float32 = e.inputBuffer.getChannelData(0);
         const int16 = new Int16Array(float32.length);
         for (let i = 0; i < float32.length; i++)
@@ -283,6 +293,8 @@ If unsure about policy details, say so.`,
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     setState(s => ({ ...s, calling: false, callTimer: "00:00" }));
     setStatus("idle");
+    inputGateOpenRef.current = true;
+    setInputGate({ state: "open", reason: "ready" });
     stopPlayback();
     processorRef.current?.disconnect(); processorRef.current = null;
     sourceRef.current?.disconnect(); sourceRef.current = null;
@@ -318,6 +330,7 @@ If unsure about policy details, say so.`,
                 <div style={{ width: 8, height: 8, borderRadius: '50%', background: status === 'live' ? '#22c55e' : '#f59e0b', animation: status === 'live' ? 'pulse 1.5s infinite' : 'none' }} />
                 <span style={{ color: '#888', fontSize: '12px' }}>
                   {status === 'live' ? `Live · ${state.asrProvider} ASR · ${state.ttsProvider} TTS` : 'Connecting...'}
+                  {status === 'live' && inputGate.state === 'closed' ? ` · ${inputGate.reason}` : ''}
                 </span>
                 <button onClick={stopCall} style={{ marginLeft: 'auto', padding: '4px 12px', fontSize: '12px', background: '#dc2626', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
                   End Call

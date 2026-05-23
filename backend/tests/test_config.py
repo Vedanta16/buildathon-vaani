@@ -7,3 +7,4 @@ def test_config_loads():
     assert "yes" in cfg.short_answer_set
     assert cfg.gemini_api_key != ""
     assert cfg.spec_commit_ratio == 0.85
+    assert cfg.vad_silence_flush_frames == 25

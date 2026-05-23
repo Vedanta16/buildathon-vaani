@@ -64,7 +64,7 @@ class Config:
 
     sample_rate: int = 16000
     barge_in_threshold: float = 0.65
-    vad_silence_flush_frames: int = 10
+    vad_silence_flush_frames: int = int(os.getenv("VAD_SILENCE_FLUSH_FRAMES", "25"))
     phrase_cache_dir: str = "phrase_cache"
     filler_dir: str = "filler_audio"
     recordings_dir: str = "recordings"
